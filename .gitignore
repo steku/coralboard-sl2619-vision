@@ -1,0 +1,27 @@
+# Configuration & Secrets
+config.yaml
+config.json
+secrets.yaml
+secrets.json
+.env
+
+# Model weights & binaries
+models/*.vmfb
+models/*.onnx
+models/*.bin
+models/*.tflite
+models/*.synap
+
+# Python bytecode & environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+
+# System & IDE files
+.DS_Store
+.vscode/
+.idea/

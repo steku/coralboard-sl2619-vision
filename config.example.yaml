@@ -1,0 +1,19 @@
+# Example Configuration for Coralboard SL2619 Vision Proxy
+# Copy this file to config.yaml and insert your real Frigate+ API key:
+#   cp config.example.yaml config.yaml
+
+frigate_plus:
+  # Frigate+ API Key in format: <client_id>:<client_secret>
+  # Generated at https://plus.frigate.video
+  api_key: "00000000-0000-0000-0000-000000000000:0123456789abcdef0123456789abcdef01234567"
+
+  # Optional: specific model ID to download.
+  # If left empty (""), the script will list your models and download the newest/active one.
+  model_id: ""
+
+  # Local directory where downloaded model artifacts will be saved
+  output_dir: "models"
+
+server:
+  host: "0.0.0.0"
+  port: 5000

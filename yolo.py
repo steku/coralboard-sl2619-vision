@@ -1,0 +1,156 @@
+"""Image preprocessing and YOLOv9 tensor postprocessing for Coralboard SL2619."""
+
+from typing import Any, Dict, List, Tuple
+import cv2
+import numpy as np
+
+from config import COCO_CLASSES, INPUT_HEIGHT, INPUT_WIDTH, IOU_THRESHOLD, MAX_DETECTIONS, SCORE_THRESHOLD
+
+
+def preprocess_image(raw_bytes: bytes, target_w: int = INPUT_WIDTH, target_h: int = INPUT_HEIGHT) -> Tuple[np.ndarray, Tuple[int, int]]:
+    """Decode raw image bytes into a normalized (1, H, W, 3) NHWC float32 tensor.
+    
+    Returns:
+        tensor: np.ndarray of shape (1, target_h, target_w, 3) normalized to [0.0, 1.0].
+        orig_shape: (original_height, original_width).
+    """
+    # 1. Decode compressed bytes (JPEG, PNG, etc.) via OpenCV
+    np_buf = np.frombuffer(raw_bytes, dtype=np.uint8)
+    image = cv2.imdecode(np_buf, cv2.IMREAD_COLOR)
+
+    # 2. Fallback: handle raw uncompressed byte stream if imdecode fails
+    if image is None:
+        expected_size = target_h * target_w * 3
+        if len(raw_bytes) == expected_size:
+            image = np.frombuffer(raw_bytes, dtype=np.uint8).reshape((target_h, target_w, 3))
+        else:
+            raise ValueError(f"Failed to decode image bytes (length: {len(raw_bytes)})")
+
+    orig_h, orig_w = image.shape[:2]
+
+    # 3. Convert BGR to RGB
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    # 4. Resize to target dimension (320x320)
+    if (orig_w, orig_h) != (target_w, target_h):
+        resized = cv2.resize(image_rgb, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+    else:
+        resized = image_rgb
+
+    # 5. Normalize uint8 [0, 255] to float32 [0.0, 1.0] and add batch dimension -> (1, 320, 320, 3)
+    tensor = resized.astype(np.float32) / 255.0
+    tensor = np.expand_dims(tensor, axis=0)
+
+    return tensor, (orig_h, orig_w)
+
+
+def postprocess_yolov9(
+    outputs: Any,
+    score_threshold: float = SCORE_THRESHOLD,
+    iou_threshold: float = IOU_THRESHOLD,
+    max_detections: int = MAX_DETECTIONS,
+) -> Dict[str, Any]:
+    """Parse YOLOv9 output tensors into Frigate-compatible bounding box structures.
+    
+    Args:
+        outputs: Output array or list of arrays from IREE Runtime inference.
+        score_threshold: Minimum confidence score to retain detection.
+        iou_threshold: IoU threshold for Non-Maximum Suppression (NMS).
+        max_detections: Maximum detections to return (Frigate standard is 20).
+        
+    Returns:
+        Dictionary containing:
+        - 'predictions': DeepStack-compatible list of objects with label, confidence, coordinates.
+        - 'detections': Frigate-native list of [class_id, score, ymin, xmin, ymax, xmax].
+    """
+    if isinstance(outputs, (list, tuple)):
+        raw_pred = outputs[0]
+    else:
+        raw_pred = outputs
+
+    # Ensure numpy array
+    raw_pred = np.asarray(raw_pred, dtype=np.float32)
+
+    # Squeeze batch dimension if present: (1, 84, N) -> (84, N) or (1, N, 84) -> (N, 84)
+    if raw_pred.ndim == 3:
+        raw_pred = np.squeeze(raw_pred, axis=0)
+
+    # YOLOv9 head standard format: (channels, num_anchors) e.g. (84, 2100)
+    # Transpose if necessary to get (num_anchors, 84)
+    if raw_pred.ndim == 2 and raw_pred.shape[0] < raw_pred.shape[1]:
+        raw_pred = raw_pred.T
+
+    # Bounding boxes (cx, cy, w, h) are the first 4 columns, followed by 80 COCO class scores
+    boxes_raw = raw_pred[:, :4]
+    class_scores = raw_pred[:, 4:]
+
+    # Class ID and highest score per candidate
+    class_ids = np.argmax(class_scores, axis=1)
+    scores = np.max(class_scores, axis=1)
+
+    # Score filtering
+    valid_mask = scores >= score_threshold
+    if not np.any(valid_mask):
+        return {"predictions": [], "detections": []}
+
+    boxes_raw = boxes_raw[valid_mask]
+    scores = scores[valid_mask]
+    class_ids = class_ids[valid_mask]
+
+    # Convert cx, cy, w, h to xyxy normalized [0.0, 1.0] relative to 320x320 input
+    cx = boxes_raw[:, 0]
+    cy = boxes_raw[:, 1]
+    w = boxes_raw[:, 2]
+    h = boxes_raw[:, 3]
+
+    x1 = np.clip((cx - w / 2.0) / float(INPUT_WIDTH), 0.0, 1.0)
+    y1 = np.clip((cy - h / 2.0) / float(INPUT_HEIGHT), 0.0, 1.0)
+    x2 = np.clip((cx + w / 2.0) / float(INPUT_WIDTH), 0.0, 1.0)
+    y2 = np.clip((cy + h / 2.0) / float(INPUT_HEIGHT), 0.0, 1.0)
+
+    # Prepare boxes in [x, y, width, height] format in pixels for cv2.dnn.NMSBoxes
+    nms_boxes = []
+    for bx1, by1, bx2, by2 in zip(x1, y1, x2, y2):
+        px = int(bx1 * INPUT_WIDTH)
+        py = int(by1 * INPUT_HEIGHT)
+        pw = int(max(0.0, (bx2 - bx1) * INPUT_WIDTH))
+        ph = int(max(0.0, (by2 - by1) * INPUT_HEIGHT))
+        nms_boxes.append([px, py, pw, ph])
+
+    indices = cv2.dnn.NMSBoxes(
+        nms_boxes,
+        scores.tolist(),
+        score_threshold=float(score_threshold),
+        nms_threshold=float(iou_threshold),
+    )
+
+    predictions: List[Dict[str, Any]] = []
+    detections: List[List[float]] = []
+
+    if len(indices) > 0:
+        flat_indices = np.array(indices).flatten()[:max_detections]
+        for idx in flat_indices:
+            cid = int(class_ids[idx])
+            label = COCO_CLASSES[cid] if cid < len(COCO_CLASSES) else f"class_{cid}"
+            conf = float(scores[idx])
+            ymin = float(y1[idx])
+            xmin = float(x1[idx])
+            ymax = float(y2[idx])
+            xmax = float(x2[idx])
+
+            predictions.append({
+                "label": label,
+                "confidence": round(conf, 4),
+                "y_min": round(ymin, 4),
+                "x_min": round(xmin, 4),
+                "y_max": round(ymax, 4),
+                "x_max": round(xmax, 4),
+            })
+
+            # Frigate detection array: [class_id, confidence, ymin, xmin, ymax, xmax]
+            detections.append([cid, round(conf, 4), round(ymin, 4), round(xmin, 4), round(ymax, 4), round(xmax, 4)])
+
+    return {
+        "predictions": predictions,
+        "detections": detections,
+    }
