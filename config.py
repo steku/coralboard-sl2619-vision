@@ -5,9 +5,10 @@ INPUT_HEIGHT = 320
 INPUT_CHANNELS = 3
 
 # Inference Thresholds
-SCORE_THRESHOLD = 0.25
+SCORE_THRESHOLD = 0.20
 IOU_THRESHOLD = 0.4
 MAX_DETECTIONS = 20
+CONFIDENCE_SCALE = 2.0  # Rescales INT8 saturated [0.0, 0.5] confidences to standard [0.0, 1.0] for Frigate
 
 # Server Settings
 HOST = "0.0.0.0"

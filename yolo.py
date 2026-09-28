@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Tuple
 import cv2
 import numpy as np
 
-from config import COCO_CLASSES, INPUT_HEIGHT, INPUT_WIDTH, IOU_THRESHOLD, MAX_DETECTIONS, SCORE_THRESHOLD
+from config import COCO_CLASSES, CONFIDENCE_SCALE, INPUT_HEIGHT, INPUT_WIDTH, IOU_THRESHOLD, MAX_DETECTIONS, SCORE_THRESHOLD
 
 
 def preprocess_image(raw_bytes: bytes, target_w: int = INPUT_WIDTH, target_h: int = INPUT_HEIGHT) -> Tuple[np.ndarray, Tuple[int, int]]:
@@ -152,7 +152,8 @@ def postprocess_yolov9(
         for idx in flat_indices:
             cid = int(class_ids[idx])
             label = COCO_CLASSES[cid] if cid < len(COCO_CLASSES) else f"class_{cid}"
-            conf = float(scores[idx])
+            # Scale INT8 saturated scores (0.0-0.5) to standard Frigate detector range (0.0-1.0)
+            conf = min(1.0, float(scores[idx]) * CONFIDENCE_SCALE)
             ymin = float(y1[idx])
             xmin = float(x1[idx])
             ymax = float(y2[idx])
