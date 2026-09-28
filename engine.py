@@ -83,14 +83,11 @@ def _detect_file_format(file_path: Path) -> str:
     with open(file_path, "rb") as f:
         header = f.read(128)
 
-    if header.startswith(b"\x1f\x8b") or tarfile.is_tarfile(file_path):
-        return "tar"
-    if header.startswith(b"PK\x03\x04") or zipfile.is_zipfile(file_path):
-        return "zip"
-    if header.startswith(b"<?xml") or b"<Error>" in header:
-        return "xml_error"
-    if header.startswith(b"{") and (b"error" in header.lower() or b"message" in header.lower()):
-        return "json_error"
+    # IREE VMFB modules: either flatbytecode or ZIP container wrapping module.fb
+    if file_path.suffix == ".vmfb" or b"module.fb" in header or b"IREE" in header[:32] or b"VMFB" in header[:32]:
+        return "vmfb"
+    if file_path.suffix == ".synap" or b"synap" in header[:32].lower() or b"SYNAP" in header[:32]:
+        return "synap"
     # Hailo executable format (.hef) magic: 0x01 'H' 'E' 'F'
     if header.startswith(b"\x01HEF") or header.startswith(b"HEF"):
         return "hef"
@@ -99,10 +96,20 @@ def _detect_file_format(file_path: Path) -> str:
         return "onnx"
     if b"ONNX" in header[:32]:
         return "onnx"
-    if b"synap" in header[:32].lower() or b"SYNAP" in header[:32]:
-        return "synap"
-    if b"VMFB" in header[:32] or b"iree" in header[:32].lower():
-        return "vmfb"
+    if header.startswith(b"\x1f\x8b") or tarfile.is_tarfile(file_path):
+        return "tar"
+    if header.startswith(b"PK\x03\x04") or zipfile.is_zipfile(file_path):
+        try:
+            with zipfile.ZipFile(file_path, "r") as zf:
+                if "module.fb" in zf.namelist():
+                    return "vmfb"
+        except Exception:
+            pass
+        return "zip"
+    if header.startswith(b"<?xml") or b"<Error>" in header:
+        return "xml_error"
+    if header.startswith(b"{") and (b"error" in header.lower() or b"message" in header.lower()):
+        return "json_error"
 
     if file_path.suffix == ".onnx":
         return "onnx"
@@ -118,6 +125,10 @@ def _inspect_and_unpack_if_archive(file_path: Path) -> Path:
 
     if file_path.stat().st_size == 0:
         raise ValueError(f"Model file '{file_path}' is completely empty (0 bytes).")
+
+    # Never extract .vmfb files (IREE modules are packaged as zip containers with module.fb)
+    if file_path.suffix == ".vmfb" or _detect_file_format(file_path) == "vmfb":
+        return file_path
 
     with open(file_path, "rb") as f:
         header = f.read(128)
@@ -149,16 +160,25 @@ def _inspect_and_unpack_if_archive(file_path: Path) -> Path:
         except Exception as e:
             logger.warning(f"Failed to extract as tar archive: {e}")
 
-    # Check for ZIP archive
+    # Check for general ZIP archive (excluding IREE bytecode vmfb)
     elif header.startswith(b"PK\x03\x04") or zipfile.is_zipfile(file_path):
-        logger.info(f"Zip archive detected at {file_path}. Unpacking...")
+        is_vmfb = False
         try:
             with zipfile.ZipFile(file_path, "r") as zf:
-                zf.extractall(path=out_dir)
-            logger.info("Zip archive extracted successfully.")
-            is_archive = True
-        except Exception as e:
-            logger.warning(f"Failed to extract as zip archive: {e}")
+                if "module.fb" in zf.namelist():
+                    is_vmfb = True
+        except Exception:
+            pass
+
+        if not is_vmfb:
+            logger.info(f"Zip archive detected at {file_path}. Unpacking...")
+            try:
+                with zipfile.ZipFile(file_path, "r") as zf:
+                    zf.extractall(path=out_dir)
+                logger.info("Zip archive extracted successfully.")
+                is_archive = True
+            except Exception as e:
+                logger.warning(f"Failed to extract as zip archive: {e}")
 
     # Check for Hailo HEF model misnamed as .vmfb
     if header.startswith(b"\x01HEF") or header.startswith(b"HEF"):
@@ -381,11 +401,24 @@ class TorqVisionEngine:
                 f"Root cause: {self.init_error or 'Unknown initialization failure'}"
             )
 
-        # Execute inference through appropriate runtime
-        if self.backend_type == "synap" and hasattr(self.runner, "predict"):
-            outputs = self.runner.predict([input_tensor])
-        else:
-            outputs = self.runner.infer([input_tensor])
+        # Execute inference through appropriate runtime (support both float32 and int8 models)
+        inp = input_tensor
+        try:
+            if self.backend_type == "synap" and hasattr(self.runner, "predict"):
+                outputs = self.runner.predict([inp])
+            else:
+                outputs = self.runner.infer([inp])
+        except (TypeError, ValueError) as err:
+            err_msg = str(err).lower()
+            if "int8" in err_msg or "i8" in err_msg or "dtype" in err_msg or "type" in err_msg:
+                # Convert float32 [0.0, 1.0] -> int8 [-128, 127] with scale 1/255 and zero-point -128
+                inp_int8 = np.clip(np.round(inp * 255.0) - 128.0, -128, 127).astype(np.int8)
+                if self.backend_type == "synap" and hasattr(self.runner, "predict"):
+                    outputs = self.runner.predict([inp_int8])
+                else:
+                    outputs = self.runner.infer([inp_int8])
+            else:
+                raise
 
         if not isinstance(outputs, (list, tuple)):
             outputs = [outputs]

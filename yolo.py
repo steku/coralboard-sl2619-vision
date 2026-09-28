@@ -75,13 +75,19 @@ def postprocess_yolov9(
         raw_pred = outputs
 
     # Ensure numpy array
-    raw_pred = np.asarray(raw_pred, dtype=np.float32)
+    raw_pred = np.asarray(raw_pred)
+
+    # Dequantize int8 predictions if model outputs INT8 (e.g. YOLO26 Torq NPU head)
+    if raw_pred.dtype == np.int8:
+        raw_pred = (raw_pred.astype(np.float32) + 128.0) * 0.00423651235178113
+    elif raw_pred.dtype != np.float32:
+        raw_pred = raw_pred.astype(np.float32)
 
     # Squeeze batch dimension if present: (1, 84, N) -> (84, N) or (1, N, 84) -> (N, 84)
     if raw_pred.ndim == 3:
         raw_pred = np.squeeze(raw_pred, axis=0)
 
-    # YOLOv9 head standard format: (channels, num_anchors) e.g. (84, 2100)
+    # YOLO head standard format: (channels, num_anchors) e.g. (84, 2100)
     # Transpose if necessary to get (num_anchors, 84)
     if raw_pred.ndim == 2 and raw_pred.shape[0] < raw_pred.shape[1]:
         raw_pred = raw_pred.T
@@ -104,10 +110,17 @@ def postprocess_yolov9(
     class_ids = class_ids[valid_mask]
 
     # Convert cx, cy, w, h to xyxy normalized [0.0, 1.0] relative to model input dimensions
-    cx = boxes_raw[:, 0]
-    cy = boxes_raw[:, 1]
-    w = boxes_raw[:, 2]
-    h = boxes_raw[:, 3]
+    # Supports both normalized coordinates [0.0, 1.0] and pixel space coordinates [0, 320]
+    if len(boxes_raw) > 0 and np.max(boxes_raw) <= 1.05:
+        cx = boxes_raw[:, 0] * float(input_width)
+        cy = boxes_raw[:, 1] * float(input_height)
+        w = boxes_raw[:, 2] * float(input_width)
+        h = boxes_raw[:, 3] * float(input_height)
+    else:
+        cx = boxes_raw[:, 0]
+        cy = boxes_raw[:, 1]
+        w = boxes_raw[:, 2]
+        h = boxes_raw[:, 3]
 
     x1 = np.clip((cx - w / 2.0) / float(input_width), 0.0, 1.0)
     y1 = np.clip((cy - h / 2.0) / float(input_height), 0.0, 1.0)

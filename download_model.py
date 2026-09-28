@@ -275,17 +275,17 @@ def extract_model_resolution(model: Dict[str, Any]) -> Optional[int]:
     if m:
         return int(m.group(1))
 
-SYNAPTICS_TORQ_YOLO_URL = "https://huggingface.co/Synaptics/yolov8-od-nano-320-int8-torq/resolve/main/yolov8n_npu.vmfb"
-SYNAPTICS_TORQ_LABELS_URL = "https://huggingface.co/Synaptics/yolov8-od-nano-320-int8-torq/raw/main/labels.json"
+SYNAPTICS_TORQ_YOLO_URL = "https://huggingface.co/Synaptics/yolov26n_od/resolve/main/yolo26n_npu.vmfb"
+SYNAPTICS_TORQ_LABELS_URL = "https://huggingface.co/Synaptics/yolov26n_od/raw/main/labels.json"
 
 
 def download_synaptics_torq_model(output_dir: Path) -> Path:
-    """Download official pre-compiled Synaptics Torq NPU YOLOv8n (320x320 INT8 VMFB)."""
+    """Download official pre-compiled Synaptics Torq NPU YOLO model (320x320 INT8 VMFB, bytecode v16)."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    vmfb_path = output_dir / "yolov8n_npu.vmfb"
+    vmfb_path = output_dir / "yolo26n_npu.vmfb"
     labels_path = output_dir / "labels.json"
 
-    logger.info("Downloading official Synaptics Torq NPU model (yolov8n_npu.vmfb, 320x320 INT8)...")
+    logger.info("Downloading official Synaptics Torq NPU model (yolo26n_npu.vmfb, 320x320 INT8, bytecode 16.0)...")
     download_file(SYNAPTICS_TORQ_YOLO_URL, vmfb_path)
 
     logger.info("Downloading COCO labels metadata...")
