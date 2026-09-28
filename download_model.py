@@ -405,15 +405,34 @@ def main() -> None:
             except Exception as e:
                 logger.warning(f"Failed to extract zip archive: {e}")
 
-        # Look for extracted model file (.vmfb or .synap)
-        for ext in (".vmfb", ".synap"):
+        # Check if downloaded artifact is actually an ONNX model
+        if (header.startswith(b"\x08") and len(header) > 3 and header[2] == 0x12) or b"ONNX" in header[:32]:
+            onnx_path = dest_path.with_suffix(".onnx")
+            if onnx_path != dest_path:
+                try:
+                    if not onnx_path.exists():
+                        dest_path.rename(onnx_path)
+                    dest_path = onnx_path
+                    final_model_path = onnx_path
+                    logger.info(f"Artifact recognized as ONNX model: {onnx_path.name}")
+                except Exception as e:
+                    logger.warning(f"Could not rename {dest_path} -> {onnx_path}: {e}")
+
+        # Look for extracted model file (.vmfb, .synap, or .onnx)
+        for ext in (".vmfb", ".synap", ".onnx"):
             for candidate in output_dir.glob(f"*{ext}"):
-                if candidate.name not in ("yolov9_320.vmfb", "model.vmfb") and candidate.is_file():
+                if candidate.name not in ("yolov9_320.vmfb", "model.vmfb", "yolov9_320.onnx", "model.onnx") and candidate.is_file():
                     final_model_path = candidate
                     break
 
-    # 8. Create convenient aliases (models/yolov9_320.vmfb and models/model.vmfb)
-    for alias_name in ("yolov9_320.vmfb", "model.vmfb"):
+    # 8. Create convenient aliases
+    ext = final_model_path.suffix or ".vmfb"
+    aliases = [f"yolov9_320{ext}", f"model{ext}"]
+    # If ONNX, also alias yolov9_320.vmfb so default configs load seamlessly
+    if ext == ".onnx":
+        aliases.extend(["yolov9_320.vmfb", "model.vmfb"])
+
+    for alias_name in aliases:
         alias_path = output_dir / alias_name
         if alias_path.resolve() != final_model_path.resolve():
             try:
