@@ -137,6 +137,7 @@ def _inspect_and_unpack_if_archive(file_path: Path) -> Path:
 
     out_dir = file_path.parent
 
+    is_archive = False
     # Check for GZIP / TAR archive
     if header.startswith(b"\x1f\x8b") or tarfile.is_tarfile(file_path):
         logger.info(f"Archive detected at {file_path}. Unpacking tarball...")
@@ -144,6 +145,7 @@ def _inspect_and_unpack_if_archive(file_path: Path) -> Path:
             with tarfile.open(file_path, "r:*") as tar:
                 tar.extractall(path=out_dir)
             logger.info("Tar archive extracted successfully.")
+            is_archive = True
         except Exception as e:
             logger.warning(f"Failed to extract as tar archive: {e}")
 
@@ -154,8 +156,22 @@ def _inspect_and_unpack_if_archive(file_path: Path) -> Path:
             with zipfile.ZipFile(file_path, "r") as zf:
                 zf.extractall(path=out_dir)
             logger.info("Zip archive extracted successfully.")
+            is_archive = True
         except Exception as e:
             logger.warning(f"Failed to extract as zip archive: {e}")
+
+    # Check for Hailo HEF model misnamed as .vmfb
+    if header.startswith(b"\x01HEF") or header.startswith(b"HEF"):
+        hef_path = file_path.with_suffix(".hef")
+        if hef_path != file_path:
+            try:
+                if not hef_path.exists():
+                    file_path.rename(hef_path)
+                file_path = hef_path
+                logger.info(f"Renamed misnamed Hailo artifact: {hef_path.name}")
+            except Exception as e:
+                logger.warning(f"Could not rename {file_path} -> {hef_path}: {e}")
+        return file_path
 
     # Check for ONNX model disguised as .vmfb
     if header.startswith(b"\x08") and len(header) > 3 and header[2] == 0x12:
@@ -169,11 +185,16 @@ def _inspect_and_unpack_if_archive(file_path: Path) -> Path:
             except Exception as e:
                 logger.warning(f"Could not rename {file_path} -> {onnx_path}: {e}")
 
-    # Find the extracted model inside output dir
-    for ext in (".vmfb", ".synap", ".onnx"):
-        for extracted in out_dir.glob(f"*{ext}"):
-            if extracted.name not in ("yolov9_320.vmfb", "model.vmfb", "yolov9_320.onnx", "model.onnx") and extracted.is_file():
-                return extracted
+    # If an archive was extracted, find the newly extracted model inside output dir
+    if is_archive:
+        for ext in (".vmfb", ".synap", ".onnx"):
+            for extracted in out_dir.glob(f"*{ext}"):
+                if extracted.name not in ("yolov9_320.vmfb", "model.vmfb", "yolov9_320.onnx", "model.onnx") and extracted.is_file():
+                    try:
+                        if _detect_file_format(extracted) in ("vmfb", "synap", "onnx"):
+                            return extracted
+                    except Exception:
+                        pass
 
     return file_path
 
@@ -225,8 +246,22 @@ class TorqVisionEngine:
         if not target.is_absolute():
             target = BASE_DIR / target
 
+        model_dir = target.parent if target.parent.exists() else (BASE_DIR / "models")
+        if model_dir.is_dir():
+            # Clean up and rename any misnamed Hailo .hef files ending in .vmfb
+            for f in list(model_dir.iterdir()):
+                if f.is_file() and f.suffix == ".vmfb":
+                    try:
+                        if _detect_file_format(f) == "hef":
+                            hef_dest = f.with_suffix(".hef")
+                            if not hef_dest.exists():
+                                f.rename(hef_dest)
+                                logger.info(f"Renamed misnamed Hailo model: {f.name} -> {hef_dest.name}")
+                    except Exception:
+                        pass
+
+        # If configured path does not exist or points to a Hailo model, auto-discover
         if not target.exists() or _detect_file_format(target) == "hef":
-            model_dir = target.parent if target.parent.exists() else (BASE_DIR / "models")
             if model_dir.is_dir():
                 candidates = [
                     f for f in model_dir.iterdir()
