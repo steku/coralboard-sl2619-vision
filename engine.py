@@ -267,6 +267,13 @@ class TorqVisionEngine:
                     compatible.sort(key=lambda p: p.stat().st_mtime, reverse=True)
                     target = compatible[0]
                     logger.info(f"Auto-discovered compatible NPU model artifact: {target}")
+                else:
+                    raise FileNotFoundError(
+                        f"Configured model '{target}' is an uncompiled ONNX or incompatible model, "
+                        "and no genuine Torq NPU models (.vmfb / .synap) were found in 'models/'.\n"
+                        "To download and install the official hardware-accelerated model, run:\n"
+                        "  python3 download_model.py --synaptics-npu"
+                    )
 
         return target
 
