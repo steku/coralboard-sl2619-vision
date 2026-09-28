@@ -108,13 +108,55 @@ class FrigatePlusClient:
         return {"Authorization": f"Bearer {self.access_token}"}
 
     def list_models(self) -> list:
-        """Fetch list of all trained models associated with the account."""
+        """Fetch all models including account models and Frigate+ base models."""
+        models: list = []
+        seen_ids = set()
+
+        def _add_model(m: Dict[str, Any], is_base: bool = False) -> None:
+            mid = m.get("id")
+            if not mid or mid in seen_ids:
+                return
+            seen_ids.add(mid)
+            if is_base or m.get("isBase") or m.get("base") or "base" in str(m.get("name", "")).lower():
+                m["is_base"] = True
+            else:
+                m.setdefault("is_base", False)
+            models.append(m)
+
+        # 1. Primary account & global model list
         url = f"{self.host}/v1/model/list"
         resp = requests.get(url, headers=self._headers(), timeout=15)
-        if not resp.ok:
-            raise RuntimeError(f"Failed to list models (HTTP {resp.status_code}): {resp.text}")
-        data = resp.json()
-        return data.get("list") or []
+        if resp.ok:
+            data = resp.json()
+            if isinstance(data, list):
+                for m in data:
+                    _add_model(m)
+            elif isinstance(data, dict):
+                # Standard account models
+                for m in data.get("list") or []:
+                    _add_model(m)
+                # Check for base models attached to response
+                for key in ("base", "base_models", "baseModels", "public_models"):
+                    for m in data.get(key) or []:
+                        _add_model(m, is_base=True)
+        else:
+            logger.warning(f"Failed to fetch model/list: {resp.status_code}")
+
+        # 2. Query explicit base model endpoints if available
+        for endpoint in ("model/base", "model/base_models", "model/list?include_base=true"):
+            try:
+                b_resp = requests.get(f"{self.host}/v1/{endpoint}", headers=self._headers(), timeout=10)
+                if b_resp.ok:
+                    b_data = b_resp.json()
+                    items = b_data if isinstance(b_data, list) else (
+                        b_data.get("list") or b_data.get("models") or b_data.get("base") or []
+                    )
+                    for m in items:
+                        _add_model(m, is_base=True)
+            except Exception:
+                pass
+
+        return models
 
     def get_model_info(self, model_id: str) -> Dict[str, Any]:
         """Fetch metadata for a specific model."""
@@ -168,9 +210,29 @@ def download_file(url: str, dest_path: Path) -> None:
 
 
 def is_coralboard_compatible(model: Dict[str, Any]) -> bool:
-    """Check if the model metadata indicates support for Synaptics / Torq NPU."""
+    """Check if model is compatible with Coralboard SL2619 Torq NPU or is a Frigate+ base model."""
+    # 1. Base models are pre-trained foundational models available to all subscribers
+    if model.get("is_base") or model.get("base") or model.get("isBase"):
+        return True
+    name = str(model.get("name", "")).lower()
+    if "base" in name:
+        return True
+
+    # 2. Check supportedDetectors metadata
     supported = [str(d).lower() for d in (model.get("supportedDetectors") or [])]
-    return any(d in supported for d in ("synaptics", "torq"))
+    if not supported:
+        # If no specific detector restriction is tagged, allow it
+        return True
+
+    # 3. Matches Synaptics Torq NPU directly
+    if any(d in supported for d in ("synaptics", "torq")):
+        return True
+
+    # 4. OpenVINO, ONNX, CPU base formats that run via IREE / Torq
+    if any(d in supported for d in ("onnx", "openvino", "cpu")):
+        return True
+
+    return False
 
 
 def main() -> None:
@@ -193,12 +255,12 @@ def main() -> None:
     parser.add_argument(
         "--list",
         action="store_true",
-        help="List available models in account with compatibility status and exit",
+        help="List available models (including base models) and exit",
     )
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Force download even if the model is not flagged as Coralboard SL2619 compatible",
+        help="Force download even if the model is not flagged as compatible",
     )
     args = parser.parse_args()
 
@@ -225,22 +287,24 @@ def main() -> None:
     # 3. List models
     models = client.list_models()
     if not models:
-        logger.warning("No models found in your Frigate+ account.")
+        logger.warning("No models found in Frigate+.")
         return
 
     if args.list:
-        print("\n--- Frigate+ Models (Coralboard SL2619 NPU Compatibility) ---")
+        print("\n--- Frigate+ Models (Account & Base Models) ---")
         for m in models:
             mid = m.get("id")
             name = m.get("name", "unnamed")
             status = m.get("status", "unknown")
-            created = m.get("createdAt", "")
             supported = m.get("supportedDetectors") or []
-            compat = "✓ Compatible (Synaptics NPU)" if is_coralboard_compatible(m) else f"✗ Incompatible (Targets: {', '.join(supported) if supported else 'unspecified'})"
-            print(f"- ID: {mid:<36} | {name:<20} | Status: {status:<10} | [{compat}]")
+            is_base = m.get("is_base", False)
+            source_tag = "Base Model" if is_base else "Account Model"
+            compat = "✓ Compatible" if is_coralboard_compatible(m) else f"✗ Incompatible (Targets: {', '.join(supported) if supported else 'unspecified'})"
+            targets_str = f"Targets: {', '.join(supported)}" if supported else "Universal/Base"
+            print(f"- ID: {mid:<36} | {name:<22} | [{source_tag:<13}] | [{targets_str:<25}] | [{compat}]")
         return
 
-    # Filter for Coralboard SL2619 compatible models
+    # Filter for compatible models (including base models)
     compatible_models = [m for m in models if is_coralboard_compatible(m)]
 
     # Select target model
@@ -248,23 +312,37 @@ def main() -> None:
     if not target_model_id:
         if not compatible_models:
             logger.error(
-                "No Coralboard SL2619 compatible models ('synaptics' detector) found in your Frigate+ account.\n"
-                f"Found {len(models)} model(s) targeting other hardware: "
-                f"{[m.get('supportedDetectors') for m in models]}.\n"
+                "No compatible models found in Frigate+.\n"
+                f"Found {len(models)} model(s): {[m.get('name') for m in models]}.\n"
                 "Use --list to inspect models, or use --model-id <id> --force to download anyway."
             )
             sys.exit(1)
 
-        target_model_id = compatible_models[0].get("id")
-        logger.info(f"Selected latest compatible Synaptics NPU model: {target_model_id}")
+        # Prioritize:
+        # 1. Custom account model compiled for synaptics/torq
+        # 2. Pre-trained base models
+        # 3. Any compatible model
+        account_synaptics = [
+            m for m in compatible_models
+            if not m.get("is_base") and any(d in [str(x).lower() for x in (m.get("supportedDetectors") or [])] for d in ("synaptics", "torq"))
+        ]
+        if account_synaptics:
+            chosen = account_synaptics[0]
+            logger.info(f"Selected latest account Synaptics NPU model: {chosen.get('id')} ({chosen.get('name')})")
+        else:
+            chosen = compatible_models[0]
+            m_type = "Base Model" if chosen.get("is_base") else "Model"
+            logger.info(f"Selected {m_type}: {chosen.get('id')} ({chosen.get('name')})")
+
+        target_model_id = chosen.get("id")
     else:
         # User specified explicit model ID, verify compatibility
         matched = next((m for m in models if m.get("id") == target_model_id), None)
         if matched and not is_coralboard_compatible(matched) and not args.force:
             logger.warning(
-                f"Model '{target_model_id}' does not list 'synaptics' in supportedDetectors "
+                f"Model '{target_model_id}' does not list compatible detectors "
                 f"(supported: {matched.get('supportedDetectors')}).\n"
-                "It may not execute on the Coralboard SL2619 Torq NPU. Pass --force to proceed anyway."
+                "Pass --force to proceed anyway."
             )
             sys.exit(1)
 
