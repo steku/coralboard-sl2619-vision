@@ -91,6 +91,9 @@ def _detect_file_format(file_path: Path) -> str:
         return "xml_error"
     if header.startswith(b"{") and (b"error" in header.lower() or b"message" in header.lower()):
         return "json_error"
+    # Hailo executable format (.hef) magic: 0x01 'H' 'E' 'F'
+    if header.startswith(b"\x01HEF") or header.startswith(b"HEF"):
+        return "hef"
     # ONNX protobuf magic: field 1 varint (0x08), version 7/8/9 (0x07-0x0a), field 2 length-delimited (0x12)
     if header.startswith(b"\x08") and len(header) > 3 and header[2] == 0x12:
         return "onnx"
@@ -222,17 +225,27 @@ class TorqVisionEngine:
         if not target.is_absolute():
             target = BASE_DIR / target
 
-        if not target.exists():
+        if not target.exists() or _detect_file_format(target) == "hef":
             model_dir = target.parent if target.parent.exists() else (BASE_DIR / "models")
             if model_dir.is_dir():
                 candidates = [
                     f for f in model_dir.iterdir()
                     if f.suffix in (".vmfb", ".synap", ".onnx") and f.is_file()
                 ]
-                if candidates:
-                    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-                    target = candidates[0]
-                    logger.info(f"Auto-discovered model artifact: {target}")
+                # Filter for Coralboard-compatible formats
+                compatible = []
+                for c in candidates:
+                    try:
+                        c_fmt = _detect_file_format(c)
+                        if c_fmt in ("vmfb", "synap", "onnx"):
+                            compatible.append(c)
+                    except Exception:
+                        pass
+
+                if compatible:
+                    compatible.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                    target = compatible[0]
+                    logger.info(f"Auto-discovered compatible model artifact: {target}")
 
         return target
 
@@ -266,7 +279,13 @@ class TorqVisionEngine:
 
         # 2. Select backend based on detected format
         try:
-            if fmt == "onnx" or self.model_path.endswith(".onnx"):
+            if fmt == "hef":
+                raise TypeError(
+                    f"Model '{self.model_path}' is a Hailo-8/8L binary artifact (.hef) with magic header '\\x01HEF'. "
+                    "The Coralboard SL2619 uses a Synaptics Torq NPU, which cannot execute Hailo models. "
+                    "Please download a Synaptics/Torq model (.vmfb / .synap) or an ONNX model (.onnx) from Frigate+."
+                )
+            elif fmt == "onnx" or self.model_path.endswith(".onnx"):
                 self.backend_type = "onnxruntime"
                 self.runner = ONNXInferenceRunner(self.model_path)
             elif fmt == "synap" or self.model_path.endswith(".synap"):

@@ -222,16 +222,20 @@ def is_coralboard_compatible(model: Dict[str, Any]) -> bool:
 
     # 2. Check supportedDetectors metadata
     supported = [str(d).lower() for d in (model.get("supportedDetectors") or [])]
-    if not supported:
-        # If no specific detector restriction is tagged, allow it
-        return True
+
+    # Explicitly reject incompatible hardware targets (e.g. Hailo, Google EdgeTPU Coral USB, Rockchip)
+    if any(d in supported for d in ("hailo", "hailo8l", "edgetpu", "rknn", "tensorrt")):
+        return False
 
     # 3. Matches Synaptics Torq NPU directly
     if any(d in supported for d in ("synaptics", "torq")):
         return True
 
-    # 4. OpenVINO, ONNX, CPU base formats that run via IREE / Torq
+    # 4. OpenVINO, ONNX, CPU base formats that run via ONNX Runtime / IREE
     if any(d in supported for d in ("onnx", "openvino", "cpu")):
+        return True
+
+    if not supported:
         return True
 
     return False
