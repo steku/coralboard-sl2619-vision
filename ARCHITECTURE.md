@@ -117,6 +117,12 @@ cameras:
       fps: 5
 ```
 
+> [!IMPORTANT]
+> **Do not define `model: path: plus://<id>` in Frigate:**
+> Frigate attempts to validate `plus://` models against local detector plugins (`synaptics`, `edgetpu`), which causes `Value error, Model does not support detector type of deepstack`.
+> Because the Coralboard runs the model externally over HTTP, the model is downloaded and loaded exclusively on the Coralboard via `download_model.py`.
+
+
 ---
 
 ## 5. Deployment on Coralboard SL2619 (Python 3.12.9)

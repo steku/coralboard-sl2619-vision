@@ -46,6 +46,7 @@ def preprocess_image(raw_bytes: bytes, target_w: int = INPUT_WIDTH, target_h: in
 
 def postprocess_yolov9(
     outputs: Any,
+    orig_shape: Tuple[int, int] = (INPUT_HEIGHT, INPUT_WIDTH),
     score_threshold: float = SCORE_THRESHOLD,
     iou_threshold: float = IOU_THRESHOLD,
     max_detections: int = MAX_DETECTIONS,
@@ -54,13 +55,14 @@ def postprocess_yolov9(
     
     Args:
         outputs: Output array or list of arrays from IREE Runtime inference.
+        orig_shape: (original_height, original_width) of the incoming image.
         score_threshold: Minimum confidence score to retain detection.
         iou_threshold: IoU threshold for Non-Maximum Suppression (NMS).
         max_detections: Maximum detections to return (Frigate standard is 20).
         
     Returns:
         Dictionary containing:
-        - 'predictions': DeepStack-compatible list of objects with label, confidence, coordinates.
+        - 'predictions': DeepStack-compatible list of objects with label, confidence, pixel coordinates.
         - 'detections': Frigate-native list of [class_id, score, ymin, xmin, ymax, xmax].
     """
     if isinstance(outputs, (list, tuple)):
@@ -124,6 +126,7 @@ def postprocess_yolov9(
         nms_threshold=float(iou_threshold),
     )
 
+    orig_h, orig_w = orig_shape
     predictions: List[Dict[str, Any]] = []
     detections: List[List[float]] = []
 
@@ -138,19 +141,21 @@ def postprocess_yolov9(
             ymax = float(y2[idx])
             xmax = float(x2[idx])
 
+            # DeepStack returns pixel coordinates based on original image dimensions
             predictions.append({
                 "label": label,
                 "confidence": round(conf, 4),
-                "y_min": round(ymin, 4),
-                "x_min": round(xmin, 4),
-                "y_max": round(ymax, 4),
-                "x_max": round(xmax, 4),
+                "y_min": int(ymin * orig_h),
+                "x_min": int(xmin * orig_w),
+                "y_max": int(ymax * orig_h),
+                "x_max": int(xmax * orig_w),
             })
 
             # Frigate detection array: [class_id, confidence, ymin, xmin, ymax, xmax]
             detections.append([cid, round(conf, 4), round(ymin, 4), round(xmin, 4), round(ymax, 4), round(xmax, 4)])
 
     return {
+        "success": True,
         "predictions": predictions,
         "detections": detections,
     }

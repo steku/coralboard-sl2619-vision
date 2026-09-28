@@ -90,6 +90,7 @@ async def _handle_detection(raw_bytes: bytes) -> Dict[str, Any]:
     try:
         result = postprocess_yolov9(
             outputs=raw_outputs,
+            orig_shape=orig_shape,
             score_threshold=SCORE_THRESHOLD,
             iou_threshold=IOU_THRESHOLD,
         )

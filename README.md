@@ -32,3 +32,45 @@ python3 download_model.py
 python3 server.py
 ```
 
+## Frigate Configuration (Upstream Server)
+
+When Frigate runs on a separate machine, it offloads object detection to the Coralboard proxy over HTTP.
+
+### 1. Frigate `config.yml`
+
+```yaml
+detectors:
+  coral_torq:
+    type: deepstack
+    api_url: http://<CORALBOARD_IP>:5000/v1/vision/detection
+    api_timeout: 0.25  # Timeout in seconds
+
+cameras:
+  front_door:
+    ffmpeg:
+      inputs:
+        - path: rtsp://...
+          roles:
+            - detect
+    detect:
+      enabled: True
+      width: 1280
+      height: 720
+      fps: 5
+```
+
+### 2. Troubleshooting: `Model does not support detector type of deepstack`
+
+If Frigate fails to start with:
+```text
+Line Unknown: - Value error, Model does not support detector type of deepstack
+```
+
+**Cause**: 
+Your Frigate `config.yml` contains a `model:` section with `path: plus://<model_id>`. 
+Frigate checks `plus://` models against built-in accelerator plugins (where the model metadata specifies `supportedDetectors: ["synaptics"]`). Because `deepstack` is not in that list, Frigate throws a validation error.
+
+**Fix**:
+Remove `path: plus://...` from Frigate's `config.yml`. When using an external HTTP detector (`type: deepstack`), Frigate does **not** load or execute the model. The model runs exclusively on the Coralboard SL2619, which downloads and loads it directly via `download_model.py`.
+
+
