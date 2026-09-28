@@ -11,6 +11,7 @@ models/*.onnx
 models/*.bin
 models/*.tflite
 models/*.synap
+models/*.hef
 
 # Python bytecode & environments
 __pycache__/

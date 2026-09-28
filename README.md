@@ -25,10 +25,13 @@ pip install -r requirements.txt
 cp config.example.yaml config.yaml
 # Edit config.yaml and place your real Frigate+ API key
 
-# 3. Download model from Frigate+
-python3 download_model.py
+# 3. Inspect models and available resolutions
+python3 download_model.py --list
 
-# 4. Start the proxy server
+# 4. Download model with specified resolution (e.g. 320 or 640)
+python3 download_model.py --resolution 320
+
+# 5. Start the proxy server
 python3 server.py
 ```
 

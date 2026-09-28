@@ -241,6 +241,52 @@ def is_coralboard_compatible(model: Dict[str, Any]) -> bool:
     return False
 
 
+def extract_model_resolution(model: Dict[str, Any]) -> Optional[int]:
+    """Extract input resolution (e.g. 320 or 640) from model metadata or name."""
+    # 1. Direct width / height keys
+    for k in ("width", "height", "input_width", "input_height", "input_size", "size"):
+        val = model.get(k)
+        if val is not None:
+            try:
+                ival = int(val)
+                if 160 <= ival <= 1920:
+                    return ival
+            except (ValueError, TypeError):
+                pass
+
+    # 2. Input shape list (e.g. [1, 3, 640, 640])
+    shape = model.get("inputShape") or model.get("input_shape") or model.get("shape")
+    if isinstance(shape, (list, tuple)) and len(shape) >= 3:
+        dims = [d for d in shape if isinstance(d, int) and 160 <= d <= 1920]
+        if dims:
+            return dims[0]
+
+    # 3. Resolution string (e.g. "320x320", "640")
+    res_str = str(model.get("resolution", ""))
+    m = re.search(r"(\d{3,4})", res_str)
+    if m:
+        return int(m.group(1))
+
+    # 4. Model name inspection (e.g. "yolov9-320", "yolov9c-640", "base_320")
+    name = str(model.get("name", ""))
+    m = re.search(r"[_-](\d{3,4})\b", name)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"\b(\d{3,4})[px]?", name)
+    if m:
+        val = int(m.group(1))
+        if val in (256, 320, 384, 416, 512, 640, 768, 1024, 1280):
+            return val
+
+    # 5. Description inspection
+    desc = str(model.get("description", ""))
+    m = re.search(r"\b(\d{3,4})x\1\b", desc)
+    if m:
+        return int(m.group(1))
+
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download model from Frigate+ using config.yaml API key.")
     parser.add_argument(
@@ -254,6 +300,13 @@ def main() -> None:
         help="Specific model ID to download (overrides config.yaml)",
     )
     parser.add_argument(
+        "--resolution",
+        "-r",
+        type=int,
+        default=None,
+        help="Target model input resolution (e.g. 320 or 640)",
+    )
+    parser.add_argument(
         "--output-dir",
         default=None,
         help="Output directory for model file (default: models)",
@@ -261,7 +314,7 @@ def main() -> None:
     parser.add_argument(
         "--list",
         action="store_true",
-        help="List available models (including base models) and exit",
+        help="List available models (including base models and resolutions) and exit",
     )
     parser.add_argument(
         "--force",
@@ -286,6 +339,13 @@ def main() -> None:
     model_id = args.model_id or plus_cfg.get("model_id", "").strip()
     output_dir = Path(args.output_dir or plus_cfg.get("output_dir", "models"))
 
+    target_res = args.resolution or plus_cfg.get("resolution")
+    if target_res is not None:
+        try:
+            target_res = int(target_res)
+        except (ValueError, TypeError):
+            target_res = None
+
     # 2. Initialize client
     client = FrigatePlusClient(api_key=api_key)
     client.authenticate()
@@ -305,13 +365,28 @@ def main() -> None:
             supported = m.get("supportedDetectors") or []
             is_base = m.get("is_base", False)
             source_tag = "Base Model" if is_base else "Account Model"
+            res = extract_model_resolution(m)
+            res_str = f"{res}x{res}" if res else "auto"
             compat = "✓ Compatible" if is_coralboard_compatible(m) else f"✗ Incompatible (Targets: {', '.join(supported) if supported else 'unspecified'})"
             targets_str = f"Targets: {', '.join(supported)}" if supported else "Universal/Base"
-            print(f"- ID: {mid:<36} | {name:<22} | [{source_tag:<13}] | [{targets_str:<25}] | [{compat}]")
+            print(f"- ID: {mid:<36} | {name:<22} | [{source_tag:<13}] | [{res_str:<8}] | [{targets_str:<25}] | [{compat}]")
         return
 
     # Filter for compatible models (including base models)
     compatible_models = [m for m in models if is_coralboard_compatible(m)]
+
+    # Filter by resolution if requested
+    if target_res:
+        matching_res = [m for m in compatible_models if extract_model_resolution(m) == target_res]
+        if matching_res:
+            logger.info(f"Filtered {len(matching_res)} model(s) matching resolution {target_res}x{target_res}")
+            compatible_models = matching_res
+        else:
+            avail = sorted(list({extract_model_resolution(m) for m in compatible_models if extract_model_resolution(m)}))
+            logger.warning(
+                f"No compatible model explicitly tagged with resolution {target_res}x{target_res}.\n"
+                f"Available detected resolutions: {avail}. Proceeding with all compatible models."
+            )
 
     # Select target model
     target_model_id = model_id
@@ -334,11 +409,13 @@ def main() -> None:
         ]
         if account_synaptics:
             chosen = account_synaptics[0]
-            logger.info(f"Selected latest account Synaptics NPU model: {chosen.get('id')} ({chosen.get('name')})")
+            res_str = f" ({extract_model_resolution(chosen)}px)" if extract_model_resolution(chosen) else ""
+            logger.info(f"Selected latest account Synaptics NPU model: {chosen.get('id')} ({chosen.get('name')}){res_str}")
         else:
             chosen = compatible_models[0]
             m_type = "Base Model" if chosen.get("is_base") else "Model"
-            logger.info(f"Selected {m_type}: {chosen.get('id')} ({chosen.get('name')})")
+            res_str = f" ({extract_model_resolution(chosen)}px)" if extract_model_resolution(chosen) else ""
+            logger.info(f"Selected {m_type}: {chosen.get('id')} ({chosen.get('name')}){res_str}")
 
         target_model_id = chosen.get("id")
     else:
@@ -431,10 +508,15 @@ def main() -> None:
 
     # 8. Create convenient aliases
     ext = final_model_path.suffix or ".vmfb"
-    aliases = [f"yolov9_320{ext}", f"model{ext}"]
-    # If ONNX, also alias yolov9_320.vmfb so default configs load seamlessly
+    model_res = extract_model_resolution(model_info) or target_res or 320
+    aliases = [
+        f"yolov9_{model_res}{ext}",
+        f"model_{model_res}{ext}",
+        f"yolov9_320{ext}",
+        f"model{ext}",
+    ]
     if ext == ".onnx":
-        aliases.extend(["yolov9_320.vmfb", "model.vmfb"])
+        aliases.extend(["yolov9_320.vmfb", f"yolov9_{model_res}.vmfb", "model.vmfb"])
 
     for alias_name in aliases:
         alias_path = output_dir / alias_name

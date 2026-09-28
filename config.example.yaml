@@ -11,6 +11,10 @@ frigate_plus:
   # If left empty (""), the script will list your models and download the newest/active one.
   model_id: ""
 
+  # Optional: target input resolution (e.g. 320 or 640).
+  # If specified, filters for models matching this input dimension.
+  resolution: 640
+
   # Local directory where downloaded model artifacts will be saved
   output_dir: "models"
 
