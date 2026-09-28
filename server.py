@@ -52,13 +52,15 @@ async def health_check() -> Dict[str, Any]:
     }
 
 
-async def _handle_detection(raw_bytes: bytes) -> Dict[str, Any]:
+async def _handle_detection(raw_bytes: bytes, client_ip: str = "client") -> Dict[str, Any]:
     """Shared pipeline: preprocess -> NPU inference -> YOLOv9 postprocess."""
     if not raw_bytes:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Empty image payload received",
         )
+
+    logger.info(f"Received detection request from {client_ip} ({len(raw_bytes) / 1024:.1f} KB)")
 
     t0 = time.perf_counter()
 
@@ -108,9 +110,16 @@ async def _handle_detection(raw_bytes: bytes) -> Dict[str, Any]:
     postprocess_ms = (t3 - t2) * 1000.0
     total_ms = (t3 - t0) * 1000.0
 
-    logger.debug(
-        f"Inference: total={total_ms:.1f}ms (pre={preprocess_ms:.1f}ms, npu={inference_ms:.1f}ms, post={postprocess_ms:.1f}ms), "
-        f"detections={len(result.get('predictions', []))}"
+    preds = result.get("predictions", [])
+    if preds:
+        det_summary = ", ".join(f"{p['label']} ({p['confidence']:.2f})" for p in preds)
+    else:
+        det_summary = "none"
+
+    logger.info(
+        f"Inference completed in {total_ms:.1f}ms "
+        f"(pre={preprocess_ms:.1f}ms, npu={inference_ms:.1f}ms, post={postprocess_ms:.1f}ms) "
+        f"| Detections ({len(preds)}): [{det_summary}]"
     )
 
     return {
@@ -130,6 +139,7 @@ async def _handle_detection(raw_bytes: bytes) -> Dict[str, Any]:
 async def detect_raw_bytes(request: Request) -> Dict[str, Any]:
     """Primary detector endpoint accepting raw image bytes directly from Frigate."""
     content_type = request.headers.get("content-type", "")
+    client_ip = request.client.host if request.client else "unknown"
 
     if "multipart/form-data" in content_type:
         form = await request.form()
@@ -150,7 +160,7 @@ async def detect_raw_bytes(request: Request) -> Dict[str, Any]:
         # Direct raw image stream in HTTP POST body
         raw_bytes = await request.body()
 
-    return await _handle_detection(raw_bytes)
+    return await _handle_detection(raw_bytes, client_ip=client_ip)
 
 
 @app.post("/v1/vision/detection")
