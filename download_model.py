@@ -275,7 +275,38 @@ def extract_model_resolution(model: Dict[str, Any]) -> Optional[int]:
     if m:
         return int(m.group(1))
 
-    return None
+SYNAPTICS_TORQ_YOLO_URL = "https://huggingface.co/Synaptics/yolov8-od-nano-320-int8-torq/resolve/main/yolov8n_npu.vmfb"
+SYNAPTICS_TORQ_LABELS_URL = "https://huggingface.co/Synaptics/yolov8-od-nano-320-int8-torq/raw/main/labels.json"
+
+
+def download_synaptics_torq_model(output_dir: Path) -> Path:
+    """Download official pre-compiled Synaptics Torq NPU YOLOv8n (320x320 INT8 VMFB)."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    vmfb_path = output_dir / "yolov8n_npu.vmfb"
+    labels_path = output_dir / "labels.json"
+
+    logger.info("Downloading official Synaptics Torq NPU model (yolov8n_npu.vmfb, 320x320 INT8)...")
+    download_file(SYNAPTICS_TORQ_YOLO_URL, vmfb_path)
+
+    logger.info("Downloading COCO labels metadata...")
+    try:
+        download_file(SYNAPTICS_TORQ_LABELS_URL, labels_path)
+    except Exception as e:
+        logger.warning(f"Could not download labels.json: {e}")
+
+    # Create aliases so server loads seamlessly
+    for alias in ("yolov9_320.vmfb", "model.vmfb", "model_320.vmfb"):
+        alias_path = output_dir / alias
+        try:
+            if alias_path.is_symlink() or alias_path.exists():
+                alias_path.unlink()
+            alias_path.symlink_to(vmfb_path.name)
+            logger.info(f"Created alias symlink: {alias_path.name} -> {vmfb_path.name}")
+        except Exception as e:
+            logger.warning(f"Could not create symlink {alias}: {e}")
+
+    logger.info(f"Synaptics Torq NPU model installed successfully at: {vmfb_path}")
+    return vmfb_path
 
 
 def main() -> None:
@@ -308,11 +339,23 @@ def main() -> None:
         help="List available models (including base models and resolutions) and exit",
     )
     parser.add_argument(
+        "--synaptics-npu",
+        "--torq-base",
+        action="store_true",
+        help="Download official pre-compiled Synaptics Torq NPU YOLOv8n (320x320 INT8 VMFB) directly from Synaptics",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Force download even if the model is not flagged as compatible",
     )
     args = parser.parse_args()
+
+    # Direct download of official Synaptics Torq NPU model without Frigate+ credentials
+    if args.synaptics_npu:
+        out_dir = Path(args.output_dir or "models")
+        download_synaptics_torq_model(out_dir)
+        return
 
     # 1. Load config
     config = load_config(args.config)
@@ -384,13 +427,12 @@ def main() -> None:
     if not target_model_id:
         if not compatible_models:
             logger.error(
-                "No Torq NPU-compatible models found in Frigate+.\n"
-                f"Found {len(models)} model(s) in account/base: {[m.get('name') for m in models]}.\n"
-                "The Coralboard SL2619 strictly requires models compiled for the Synaptics Torq NPU (.vmfb / .synap).\n"
-                "To resolve:\n"
-                "  1. In Frigate+ (https://plus.frigate.video), request a model with detector 'synaptics'.\n"
-                "  2. Or compile an existing ONNX model to .vmfb using the Torq compiler.\n"
-                "  3. Run 'python3 download_model.py --list' to inspect all models and detector targets."
+                "No Torq NPU-compatible models found in your Frigate+ account.\n"
+                f"Found {len(models)} model(s) in account/base: {[m.get('name') for m in models]}.\n\n"
+                "Why? Frigate+ models are standard exports (ONNX, Hailo, EdgeTPU) which require\n"
+                "prior compilation to the Torq NPU bytecode format (.vmfb).\n\n"
+                "To immediately download the official pre-compiled Synaptics Torq NPU 320x320 INT8 model, run:\n"
+                "  python3 download_model.py --synaptics-npu\n"
             )
             sys.exit(1)
 

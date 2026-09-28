@@ -25,13 +25,14 @@ pip install -r requirements.txt
 cp config.example.yaml config.yaml
 # Edit config.yaml and place your real Frigate+ API key
 
-# 3. Inspect models and available resolutions
-python3 download_model.py --list
+# 3. Download official pre-compiled Synaptics Torq NPU model (320x320 INT8 VMFB)
+python3 download_model.py --synaptics-npu
 
-# 4. Download model with specified resolution (e.g. 320 or 640)
-python3 download_model.py --resolution 320
+# Or inspect and download from Frigate+ (requires Torq NPU compiled model):
+# python3 download_model.py --list
+# python3 download_model.py --resolution 320
 
-# 5. Start the proxy server
+# 4. Start the proxy server
 python3 server.py
 ```
 
