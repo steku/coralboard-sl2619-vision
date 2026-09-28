@@ -66,9 +66,12 @@ async def _handle_detection(raw_bytes: bytes, client_ip: str = "client") -> Dict
 
     t0 = time.perf_counter()
 
-    # 1. Preprocess raw bytes into normalized (1, 320, 320, 3) NHWC tensor
+    # 1. Preprocess raw bytes into normalized NHWC tensor matching model dimensions
+    in_w = getattr(npu_engine, "input_width", 320)
+    in_h = getattr(npu_engine, "input_height", 320)
+
     try:
-        tensor, orig_shape = preprocess_image(raw_bytes)
+        tensor, orig_shape = preprocess_image(raw_bytes, target_w=in_w, target_h=in_h)
     except Exception as e:
         logger.error(f"Image preprocessing error: {e}")
         raise HTTPException(
@@ -78,7 +81,7 @@ async def _handle_detection(raw_bytes: bytes, client_ip: str = "client") -> Dict
 
     t1 = time.perf_counter()
 
-    # 2. Execute inference on Synaptics Torq NPU via IREE Runtime
+    # 2. Execute inference via appropriate backend (Torq NPU / SyNAP / ONNX)
     try:
         raw_outputs = npu_engine.infer(tensor)
     except Exception as e:
@@ -97,6 +100,8 @@ async def _handle_detection(raw_bytes: bytes, client_ip: str = "client") -> Dict
             orig_shape=orig_shape,
             score_threshold=SCORE_THRESHOLD,
             iou_threshold=IOU_THRESHOLD,
+            input_width=in_w,
+            input_height=in_h,
         )
     except Exception as e:
         logger.error(f"YOLOv9 postprocessing error: {e}")

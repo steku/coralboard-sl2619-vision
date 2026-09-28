@@ -50,6 +50,8 @@ def postprocess_yolov9(
     score_threshold: float = SCORE_THRESHOLD,
     iou_threshold: float = IOU_THRESHOLD,
     max_detections: int = MAX_DETECTIONS,
+    input_width: int = INPUT_WIDTH,
+    input_height: int = INPUT_HEIGHT,
 ) -> Dict[str, Any]:
     """Parse YOLOv9 output tensors into Frigate-compatible bounding box structures.
     
@@ -59,6 +61,8 @@ def postprocess_yolov9(
         score_threshold: Minimum confidence score to retain detection.
         iou_threshold: IoU threshold for Non-Maximum Suppression (NMS).
         max_detections: Maximum detections to return (Frigate standard is 20).
+        input_width: Model tensor input width.
+        input_height: Model tensor input height.
         
     Returns:
         Dictionary containing:
@@ -99,24 +103,24 @@ def postprocess_yolov9(
     scores = scores[valid_mask]
     class_ids = class_ids[valid_mask]
 
-    # Convert cx, cy, w, h to xyxy normalized [0.0, 1.0] relative to 320x320 input
+    # Convert cx, cy, w, h to xyxy normalized [0.0, 1.0] relative to model input dimensions
     cx = boxes_raw[:, 0]
     cy = boxes_raw[:, 1]
     w = boxes_raw[:, 2]
     h = boxes_raw[:, 3]
 
-    x1 = np.clip((cx - w / 2.0) / float(INPUT_WIDTH), 0.0, 1.0)
-    y1 = np.clip((cy - h / 2.0) / float(INPUT_HEIGHT), 0.0, 1.0)
-    x2 = np.clip((cx + w / 2.0) / float(INPUT_WIDTH), 0.0, 1.0)
-    y2 = np.clip((cy + h / 2.0) / float(INPUT_HEIGHT), 0.0, 1.0)
+    x1 = np.clip((cx - w / 2.0) / float(input_width), 0.0, 1.0)
+    y1 = np.clip((cy - h / 2.0) / float(input_height), 0.0, 1.0)
+    x2 = np.clip((cx + w / 2.0) / float(input_width), 0.0, 1.0)
+    y2 = np.clip((cy + h / 2.0) / float(input_height), 0.0, 1.0)
 
     # Prepare boxes in [x, y, width, height] format in pixels for cv2.dnn.NMSBoxes
     nms_boxes = []
     for bx1, by1, bx2, by2 in zip(x1, y1, x2, y2):
-        px = int(bx1 * INPUT_WIDTH)
-        py = int(by1 * INPUT_HEIGHT)
-        pw = int(max(0.0, (bx2 - bx1) * INPUT_WIDTH))
-        ph = int(max(0.0, (by2 - by1) * INPUT_HEIGHT))
+        px = int(bx1 * input_width)
+        py = int(by1 * input_height)
+        pw = int(max(0.0, (bx2 - bx1) * input_width))
+        ph = int(max(0.0, (by2 - by1) * input_height))
         nms_boxes.append([px, py, pw, ph])
 
     indices = cv2.dnn.NMSBoxes(

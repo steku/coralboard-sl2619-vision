@@ -200,7 +200,7 @@ def _inspect_and_unpack_if_archive(file_path: Path) -> Path:
 
 
 class ONNXInferenceRunner:
-    """Inference runner using ONNX Runtime for base/uncompiled models."""
+    """Inference runner using ONNX Runtime with dynamic input dimension support."""
 
     def __init__(self, model_path: str):
         try:
@@ -216,10 +216,35 @@ class ONNXInferenceRunner:
         self.session = ort.InferenceSession(str(model_path), sess_options=opts, providers=["CPUExecutionProvider"])
         self.input_name = self.session.get_inputs()[0].name
         self.input_shape = self.session.get_inputs()[0].shape
-        logger.info(f"Initialized ONNX Runtime session: input='{self.input_name}', shape={self.input_shape}")
+
+        # Extract expected height and width: e.g. [1, 3, 640, 640] or [1, 640, 640, 3]
+        if len(self.input_shape) == 4:
+            if self.input_shape[1] == 3:  # NCHW
+                self.input_height = int(self.input_shape[2]) if isinstance(self.input_shape[2], int) else 640
+                self.input_width = int(self.input_shape[3]) if isinstance(self.input_shape[3], int) else 640
+            else:  # NHWC
+                self.input_height = int(self.input_shape[1]) if isinstance(self.input_shape[1], int) else 640
+                self.input_width = int(self.input_shape[2]) if isinstance(self.input_shape[2], int) else 640
+        else:
+            self.input_height = 640
+            self.input_width = 640
+
+        logger.info(
+            f"Initialized ONNX Runtime session: input='{self.input_name}', "
+            f"shape={self.input_shape}, resolved_dim=({self.input_width}x{self.input_height})"
+        )
 
     def infer(self, inputs: List[np.ndarray]) -> List[np.ndarray]:
         inp = inputs[0]
+
+        # Auto-resize spatial dimensions if incoming tensor does not match model expectation
+        if inp.ndim == 4 and inp.shape[-1] == 3:
+            h, w = inp.shape[1], inp.shape[2]
+            if (w, h) != (self.input_width, self.input_height):
+                import cv2
+                resized = cv2.resize(inp[0], (self.input_width, self.input_height), interpolation=cv2.INTER_LINEAR)
+                inp = np.expand_dims(resized, axis=0)
+
         # Transpose NHWC (1, H, W, 3) to NCHW (1, 3, H, W) if required by the ONNX model
         if len(self.input_shape) == 4 and self.input_shape[1] == 3 and inp.ndim == 4 and inp.shape[-1] == 3:
             inp = np.transpose(inp, (0, 3, 1, 2))
@@ -239,6 +264,18 @@ class TorqVisionEngine:
         self.backend_type: str = "unknown"
         self._is_ready = False
         self.init_error: Optional[str] = None
+
+    @property
+    def input_width(self) -> int:
+        if self.runner and hasattr(self.runner, "input_width"):
+            return self.runner.input_width
+        return 320
+
+    @property
+    def input_height(self) -> int:
+        if self.runner and hasattr(self.runner, "input_height"):
+            return self.runner.input_height
+        return 320
 
     def _resolve_model_path(self) -> Path:
         """Resolve model path against workspace and perform auto-discovery."""
