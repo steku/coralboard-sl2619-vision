@@ -359,10 +359,23 @@ class TorqVisionEngine:
                     )
 
                 logger.info(f"Initializing Torq VMFBInferenceRunner ({backend}): {self.model_path}")
-                try:
-                    self.runner = runner_cls(self.model_path)
-                except TypeError:
-                    self.runner = runner_cls(self.model_path, device_uri="torq")
+                # Try initializing with default entrypoint ('main'), and fall back to 'main_graph' if needed
+                init_attempts = [
+                    {},
+                    {"function": "main_graph"},
+                    {"device_uri": "torq"},
+                    {"device_uri": "torq", "function": "main_graph"},
+                ]
+                last_err = None
+                for kwargs in init_attempts:
+                    try:
+                        self.runner = runner_cls(self.model_path, **kwargs)
+                        break
+                    except (TypeError, ValueError) as err:
+                        last_err = err
+                else:
+                    if last_err:
+                        raise last_err
 
             self._is_ready = True
             self.init_error = None
@@ -401,24 +414,43 @@ class TorqVisionEngine:
                 f"Root cause: {self.init_error or 'Unknown initialization failure'}"
             )
 
-        # Execute inference through appropriate runtime (support both float32 and int8 models)
+        # Helper forward invocation
+        def _run_forward(t: np.ndarray):
+            if self.backend_type == "synap" and hasattr(self.runner, "predict"):
+                return self.runner.predict([t])
+            return self.runner.infer([t])
+
+        # Execute inference through appropriate runtime (support float32/int8 and NHWC/NCHW formats)
         inp = input_tensor
         try:
-            if self.backend_type == "synap" and hasattr(self.runner, "predict"):
-                outputs = self.runner.predict([inp])
-            else:
-                outputs = self.runner.infer([inp])
+            outputs = _run_forward(inp)
         except (TypeError, ValueError) as err:
             err_msg = str(err).lower()
-            if "int8" in err_msg or "i8" in err_msg or "dtype" in err_msg or "type" in err_msg:
-                # Convert float32 [0.0, 1.0] -> int8 [-128, 127] with scale 1/255 and zero-point -128
-                inp_int8 = np.clip(np.round(inp * 255.0) - 128.0, -128, 127).astype(np.int8)
-                if self.backend_type == "synap" and hasattr(self.runner, "predict"):
-                    outputs = self.runner.predict([inp_int8])
+            # 1. Try NCHW transposition if shape mismatch occurs (e.g. YOLO models exported from ONNX)
+            if ("shape" in err_msg or "dimension" in err_msg or "size" in err_msg or "mismatch" in err_msg) and inp.ndim == 4 and inp.shape[-1] in (1, 3, 4):
+                try:
+                    inp_nchw = np.transpose(inp, (0, 3, 1, 2))
+                    outputs = _run_forward(inp_nchw)
+                    err = None
+                    inp = inp_nchw
+                except Exception as shape_err:
+                    err = shape_err
+
+            # 2. Try INT8 quantization if dtype error occurs
+            if err is not None:
+                err_msg = str(err).lower()
+                if "int8" in err_msg or "i8" in err_msg or "dtype" in err_msg or "type" in err_msg:
+                    inp_int8 = np.clip(np.round(inp * 255.0) - 128.0, -128, 127).astype(np.int8)
+                    try:
+                        outputs = _run_forward(inp_int8)
+                    except (TypeError, ValueError):
+                        if inp_int8.ndim == 4 and inp_int8.shape[-1] in (1, 3, 4):
+                            inp_int8_nchw = np.transpose(inp_int8, (0, 3, 1, 2))
+                            outputs = _run_forward(inp_int8_nchw)
+                        else:
+                            raise
                 else:
-                    outputs = self.runner.infer([inp_int8])
-            else:
-                raise
+                    raise
 
         if not isinstance(outputs, (list, tuple)):
             outputs = [outputs]
