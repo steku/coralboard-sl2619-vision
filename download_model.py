@@ -371,6 +371,19 @@ def main() -> None:
 
     # 6. Stream download
     download_file(download_url, dest_path)
+
+    # 7. Create convenient aliases (models/yolov9_320.vmfb and models/model.vmfb)
+    for alias_name in ("yolov9_320.vmfb", "model.vmfb"):
+        alias_path = output_dir / alias_name
+        if alias_path.resolve() != dest_path.resolve():
+            try:
+                if alias_path.is_symlink() or alias_path.exists():
+                    alias_path.unlink()
+                alias_path.symlink_to(dest_path.name)
+                logger.info(f"Linked {alias_name} -> {dest_path.name}")
+            except Exception:
+                pass
+
     logger.info("Done!")
 
 

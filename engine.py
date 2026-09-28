@@ -60,26 +60,44 @@ class TorqVisionEngine:
 
     def load(self) -> None:
         """Initialize the IREE runtime session and load the compiled VMFB model."""
+        # 1. If configured model path doesn't exist, attempt auto-discovery
+        if not os.path.exists(self.model_path):
+            model_dir = os.path.dirname(self.model_path) or "models"
+            if os.path.isdir(model_dir):
+                candidates = [
+                    os.path.join(model_dir, f)
+                    for f in os.listdir(model_dir)
+                    if f.endswith((".vmfb", ".synap"))
+                ]
+                if candidates:
+                    # Sort by modification time to pick the most recently downloaded model
+                    candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                    self.model_path = candidates[0]
+                    logger.info(f"Auto-discovered model artifact: {self.model_path}")
+
         logger.info(f"Loading Torq NPU model from: {self.model_path}")
 
         VMFBInferenceRunner = _import_vmfb_runner()
         if VMFBInferenceRunner is None:
-            logger.warning(
-                "Torq runtime / IREE runtime not found in current Python environment. "
+            logger.error(
+                "Torq runtime / IREE runtime not found in current Python environment! "
                 "Ensure torq-runtime wheel is installed on the Coralboard SL2619."
             )
             return
 
         if not os.path.exists(self.model_path):
-            logger.warning(f"Model file not found at: {self.model_path}. Running without initialized NPU session.")
+            logger.error(
+                f"Model file not found at '{self.model_path}' and no .vmfb files found in 'models/'.\n"
+                "Please run 'python3 download_model.py' to download your model from Frigate+."
+            )
             return
 
         try:
             self.runner = VMFBInferenceRunner(self.model_path)
             self._is_ready = True
-            logger.info("Synaptics Torq NPU IREE runtime session loaded successfully.")
+            logger.info(f"Synaptics Torq NPU session loaded successfully with model: {self.model_path}")
         except Exception as e:
-            logger.error(f"Failed to initialize Torq NPU session: {e}", exc_info=True)
+            logger.error(f"Failed to initialize Torq NPU session for '{self.model_path}': {e}", exc_info=True)
             raise
 
     @property
