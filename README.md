@@ -9,11 +9,11 @@ Lightweight network proxy service running on the **Synaptics Coralboard SL2619**
 - **YOLOv9 Output Parser**: Performs NMS and formats detections into Frigate's structured JSON bounding box schema.
 
 ## Project Structure
-- [`server.py`](file:///Users/stephen/Projects/coral-sl2619-vision/server.py): FastAPI application serving `/detect` and `/v1/vision/detection`.
-- [`engine.py`](file:///Users/stephen/Projects/coral-sl2619-vision/engine.py): IREE Runtime session management for the Synaptics Torq NPU.
-- [`yolo.py`](file:///Users/stephen/Projects/coral-sl2619-vision/yolo.py): Preprocessing (raw bytes $\to 320 \times 320 \times 3$) and postprocessing (YOLOv9 tensors $\to$ NMS $\to$ JSON).
-- [`config.py`](file:///Users/stephen/Projects/coral-sl2619-vision/config.py): Server and inference parameters.
-- [`ARCHITECTURE.md`](file:///Users/stephen/Projects/coral-sl2619-vision/ARCHITECTURE.md): Full architectural overview and developer specification.
+- [`server.py`](server.py): FastAPI application serving `/detect` and `/v1/vision/detection`.
+- [`engine.py`](engine.py): IREE / Torq Runtime session management with automatic entrypoint and NCHW/NHWC layout detection.
+- [`yolo.py`](yolo.py): Preprocessing (raw bytes $\to 320 \times 320 \times 3$) and postprocessing (YOLOv9 tensors $\to$ NMS $\to$ JSON).
+- [`config.py`](config.py): Server and inference parameters, including `COCO_CLASSES`.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md): Full architectural overview and developer specification.
 
 ## Quick Start on Coralboard SL2619
 
@@ -21,16 +21,19 @@ Lightweight network proxy service running on the **Synaptics Coralboard SL2619**
 # 1. Install dependencies (Python 3.12.9)
 pip install -r requirements.txt
 
-# 2. Configure Frigate+ API key
-cp config.example.yaml config.yaml
-# Edit config.yaml and place your real Frigate+ API key
+# 2. Select / Deploy Model
 
-# 3. Download official pre-compiled Synaptics Torq NPU model (320x320 INT8 VMFB)
+# Option A: Custom Trained Model (e.g. from frigate-model-training)
+# Copy your compiled yolov9_320.vmfb into models/:
+mkdir -p models
+cp /path/to/yolov9_320.vmfb models/yolov9_320.vmfb
+# Ensure config.py COCO_CLASSES matches your dataset classes
+
+# Option B: Download official pre-compiled Synaptics Torq NPU base model (320x320 INT8 VMFB)
 python3 download_model.py --synaptics-npu
 
-# Or inspect and download from Frigate+ (requires Torq NPU compiled model):
-# python3 download_model.py --list
-# python3 download_model.py --resolution 320
+# 3. Test detection locally
+python3 test_detection.py --model models/yolov9_320.vmfb
 
 # 4. Start the proxy server
 python3 server.py

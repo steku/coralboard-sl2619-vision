@@ -54,7 +54,7 @@ To bridge the **Synaptics Coralboard SL2619** with an upstream **Frigate NVR** s
 ### Step 4: YOLOv9 Tensor Parsing & Frigate Structured JSON
 - Receives the raw prediction tensor $(1, 84, N)$ or $(N, 84)$:
   - Columns 0–3: Bounding box parameters $(c_x, c_y, w, h)$.
-  - Columns 4–83: Confidence scores for the 80 COCO classes.
+  - Columns 4+: Confidence scores for the classes configured in `config.py` (e.g. 4 classes for custom dataset, or 80 for COCO).
 - Converts center-size coordinates to normalized corner coordinates $[y_{min}, x_{min}, y_{max}, x_{max}] \in [0.0, 1.0]$.
 - Applies Non-Maximum Suppression (NMS) with `cv2.dnn.NMSBoxes` using configurable score and IoU thresholds (defaults: 0.4).
 - Emits dual compatible structures:
