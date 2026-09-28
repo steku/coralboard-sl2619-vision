@@ -167,6 +167,12 @@ def download_file(url: str, dest_path: Path) -> None:
     logger.info(f"Model saved successfully to: {dest_path}")
 
 
+def is_coralboard_compatible(model: Dict[str, Any]) -> bool:
+    """Check if the model metadata indicates support for Synaptics / Torq NPU."""
+    supported = [str(d).lower() for d in (model.get("supportedDetectors") or [])]
+    return any(d in supported for d in ("synaptics", "torq"))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download model from Frigate+ using config.yaml API key.")
     parser.add_argument(
@@ -187,7 +193,12 @@ def main() -> None:
     parser.add_argument(
         "--list",
         action="store_true",
-        help="List available models in account and exit",
+        help="List available models in account with compatibility status and exit",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force download even if the model is not flagged as Coralboard SL2619 compatible",
     )
     args = parser.parse_args()
 
@@ -218,21 +229,44 @@ def main() -> None:
         return
 
     if args.list:
-        print("\n--- Available Frigate+ Models ---")
+        print("\n--- Frigate+ Models (Coralboard SL2619 NPU Compatibility) ---")
         for m in models:
             mid = m.get("id")
             name = m.get("name", "unnamed")
             status = m.get("status", "unknown")
             created = m.get("createdAt", "")
-            print(f"- ID: {mid} | Name: {name} | Status: {status} | Created: {created}")
+            supported = m.get("supportedDetectors") or []
+            compat = "✓ Compatible (Synaptics NPU)" if is_coralboard_compatible(m) else f"✗ Incompatible (Targets: {', '.join(supported) if supported else 'unspecified'})"
+            print(f"- ID: {mid:<36} | {name:<20} | Status: {status:<10} | [{compat}]")
         return
+
+    # Filter for Coralboard SL2619 compatible models
+    compatible_models = [m for m in models if is_coralboard_compatible(m)]
 
     # Select target model
     target_model_id = model_id
     if not target_model_id:
-        # Default to latest model
-        target_model_id = models[0].get("id")
-        logger.info(f"No model_id specified. Defaulting to latest model: {target_model_id}")
+        if not compatible_models:
+            logger.error(
+                "No Coralboard SL2619 compatible models ('synaptics' detector) found in your Frigate+ account.\n"
+                f"Found {len(models)} model(s) targeting other hardware: "
+                f"{[m.get('supportedDetectors') for m in models]}.\n"
+                "Use --list to inspect models, or use --model-id <id> --force to download anyway."
+            )
+            sys.exit(1)
+
+        target_model_id = compatible_models[0].get("id")
+        logger.info(f"Selected latest compatible Synaptics NPU model: {target_model_id}")
+    else:
+        # User specified explicit model ID, verify compatibility
+        matched = next((m for m in models if m.get("id") == target_model_id), None)
+        if matched and not is_coralboard_compatible(matched) and not args.force:
+            logger.warning(
+                f"Model '{target_model_id}' does not list 'synaptics' in supportedDetectors "
+                f"(supported: {matched.get('supportedDetectors')}).\n"
+                "It may not execute on the Coralboard SL2619 Torq NPU. Pass --force to proceed anyway."
+            )
+            sys.exit(1)
 
     # 4. Fetch model metadata
     model_info = client.get_model_info(target_model_id)
@@ -247,8 +281,14 @@ def main() -> None:
     # 5. Fetch signed download URL
     download_url = client.get_download_url(target_model_id)
 
-    # Determine file extension/name from model info or default
-    file_name = f"{target_model_id}.vmfb"
+    # Determine file extension/name from presigned URL path or fallback to .vmfb
+    url_path = download_url.split("?")[0]
+    url_filename = os.path.basename(url_path)
+    if url_filename and "." in url_filename:
+        file_name = url_filename
+    else:
+        file_name = f"{target_model_id}.vmfb"
+
     dest_path = output_dir / file_name
 
     # 6. Stream download
