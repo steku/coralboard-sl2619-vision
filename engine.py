@@ -199,64 +199,8 @@ def _inspect_and_unpack_if_archive(file_path: Path) -> Path:
     return file_path
 
 
-class ONNXInferenceRunner:
-    """Inference runner using ONNX Runtime with dynamic input dimension support."""
-
-    def __init__(self, model_path: str):
-        try:
-            import onnxruntime as ort
-        except ImportError:
-            raise ImportError(
-                "onnxruntime is required to run .onnx models! "
-                "Install it on the Coralboard: pip install onnxruntime"
-            )
-
-        opts = ort.SessionOptions()
-        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        self.session = ort.InferenceSession(str(model_path), sess_options=opts, providers=["CPUExecutionProvider"])
-        self.input_name = self.session.get_inputs()[0].name
-        self.input_shape = self.session.get_inputs()[0].shape
-
-        # Extract expected height and width: e.g. [1, 3, 640, 640] or [1, 640, 640, 3]
-        if len(self.input_shape) == 4:
-            if self.input_shape[1] == 3:  # NCHW
-                self.input_height = int(self.input_shape[2]) if isinstance(self.input_shape[2], int) else 640
-                self.input_width = int(self.input_shape[3]) if isinstance(self.input_shape[3], int) else 640
-            else:  # NHWC
-                self.input_height = int(self.input_shape[1]) if isinstance(self.input_shape[1], int) else 640
-                self.input_width = int(self.input_shape[2]) if isinstance(self.input_shape[2], int) else 640
-        else:
-            self.input_height = 640
-            self.input_width = 640
-
-        logger.info(
-            f"Initialized ONNX Runtime session: input='{self.input_name}', "
-            f"shape={self.input_shape}, resolved_dim=({self.input_width}x{self.input_height})"
-        )
-
-    def infer(self, inputs: List[np.ndarray]) -> List[np.ndarray]:
-        inp = inputs[0]
-
-        # Auto-resize spatial dimensions if incoming tensor does not match model expectation
-        if inp.ndim == 4 and inp.shape[-1] == 3:
-            h, w = inp.shape[1], inp.shape[2]
-            if (w, h) != (self.input_width, self.input_height):
-                import cv2
-                resized = cv2.resize(inp[0], (self.input_width, self.input_height), interpolation=cv2.INTER_LINEAR)
-                inp = np.expand_dims(resized, axis=0)
-
-        # Transpose NHWC (1, H, W, 3) to NCHW (1, 3, H, W) if required by the ONNX model
-        if len(self.input_shape) == 4 and self.input_shape[1] == 3 and inp.ndim == 4 and inp.shape[-1] == 3:
-            inp = np.transpose(inp, (0, 3, 1, 2))
-
-        if inp.dtype != np.float32:
-            inp = inp.astype(np.float32)
-
-        return self.session.run(None, {self.input_name: inp})
-
-
 class TorqVisionEngine:
-    """Inference Engine for Synaptics Torq NPU, SyNAP, and ONNX Runtime."""
+    """Inference Engine strictly for Synaptics Torq NPU and SyNAP hardware accelerators."""
 
     def __init__(self, model_path: str):
         self.model_path = model_path
@@ -297,19 +241,24 @@ class TorqVisionEngine:
                     except Exception:
                         pass
 
-        # If configured path does not exist or points to a Hailo model, auto-discover
-        if not target.exists() or _detect_file_format(target) == "hef":
+        # If configured path does not exist, points to Hailo (.hef), or points to ONNX, auto-discover real NPU binaries
+        is_invalid = (
+            not target.exists()
+            or _detect_file_format(target) in ("hef", "onnx")
+            or target.suffix == ".onnx"
+        )
+        if is_invalid:
             if model_dir.is_dir():
                 candidates = [
                     f for f in model_dir.iterdir()
-                    if f.suffix in (".vmfb", ".synap", ".onnx") and f.is_file()
+                    if f.suffix in (".vmfb", ".synap") and f.is_file()
                 ]
-                # Filter for Coralboard-compatible formats
+                # Filter for genuine Torq/SyNAP NPU binaries
                 compatible = []
                 for c in candidates:
                     try:
                         c_fmt = _detect_file_format(c)
-                        if c_fmt in ("vmfb", "synap", "onnx"):
+                        if c_fmt in ("vmfb", "synap"):
                             compatible.append(c)
                     except Exception:
                         pass
@@ -317,12 +266,12 @@ class TorqVisionEngine:
                 if compatible:
                     compatible.sort(key=lambda p: p.stat().st_mtime, reverse=True)
                     target = compatible[0]
-                    logger.info(f"Auto-discovered compatible model artifact: {target}")
+                    logger.info(f"Auto-discovered compatible NPU model artifact: {target}")
 
         return target
 
     def load(self) -> None:
-        """Initialize the runtime session and load the model."""
+        """Initialize the runtime session and load the model on the Torq NPU."""
         self._is_ready = False
         self.init_error = None
 
@@ -339,8 +288,8 @@ class TorqVisionEngine:
 
         if not os.path.exists(self.model_path):
             self.init_error = (
-                f"Model file not found at '{self.model_path}' and no compatible models found in 'models/'. "
-                "Please run 'python3 download_model.py' to download your model from Frigate+."
+                f"Model file not found at '{self.model_path}' and no compatible NPU models found in 'models/'. "
+                "Please run 'python3 download_model.py' to download your Torq NPU model (.vmfb / .synap)."
             )
             logger.error(self.init_error)
             raise FileNotFoundError(self.init_error)
@@ -349,17 +298,21 @@ class TorqVisionEngine:
         fmt = _detect_file_format(Path(self.model_path))
         logger.info(f"Loading model ({fmt.upper()}) from: {self.model_path} ({file_size_mb:.2f} MB)")
 
-        # 2. Select backend based on detected format
+        # 2. Select backend based on detected format - NPU only, NEVER CPU
         try:
             if fmt == "hef":
                 raise TypeError(
                     f"Model '{self.model_path}' is a Hailo-8/8L binary artifact (.hef) with magic header '\\x01HEF'. "
                     "The Coralboard SL2619 uses a Synaptics Torq NPU, which cannot execute Hailo models. "
-                    "Please download a Synaptics/Torq model (.vmfb / .synap) or an ONNX model (.onnx) from Frigate+."
+                    "Please download or compile a Synaptics/Torq model (.vmfb / .synap) for the NPU."
                 )
             elif fmt == "onnx" or self.model_path.endswith(".onnx"):
-                self.backend_type = "onnxruntime"
-                self.runner = ONNXInferenceRunner(self.model_path)
+                raise RuntimeError(
+                    f"Model '{self.model_path}' is an uncompiled ONNX model.\n"
+                    "Inference must strictly execute on the Torq NPU; CPU fallback execution is prohibited.\n"
+                    "ONNX models cannot run directly on the Torq NPU without compilation.\n"
+                    "Please provide a compiled Torq VMFB (.vmfb) or SyNAP (.synap) model."
+                )
             elif fmt == "synap" or self.model_path.endswith(".synap"):
                 self.backend_type = "synap"
                 from synap import Network

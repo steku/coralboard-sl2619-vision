@@ -212,30 +212,21 @@ def download_file(url: str, dest_path: Path) -> None:
 
 
 def is_coralboard_compatible(model: Dict[str, Any]) -> bool:
-    """Check if model is compatible with Coralboard SL2619 Torq NPU or is a Frigate+ base model."""
-    # 1. Base models are pre-trained foundational models available to all subscribers
-    if model.get("is_base") or model.get("base") or model.get("isBase"):
-        return True
-    name = str(model.get("name", "")).lower()
-    if "base" in name:
-        return True
-
-    # 2. Check supportedDetectors metadata
+    """Check if model is compatible with Coralboard SL2619 Torq NPU (hardware accelerated only)."""
+    # 1. Check supportedDetectors metadata
     supported = [str(d).lower() for d in (model.get("supportedDetectors") or [])]
 
-    # Explicitly reject incompatible hardware targets (e.g. Hailo, Google EdgeTPU Coral USB, Rockchip)
-    if any(d in supported for d in ("hailo", "hailo8l", "edgetpu", "rknn", "tensorrt")):
+    # Explicitly reject incompatible hardware targets and CPU/ONNX fallbacks
+    if any(d in supported for d in ("hailo", "hailo8l", "edgetpu", "rknn", "tensorrt", "cpu", "openvino")):
         return False
 
-    # 3. Matches Synaptics Torq NPU directly
-    if any(d in supported for d in ("synaptics", "torq")):
+    # Matches Synaptics Torq NPU directly
+    if any(d in supported for d in ("synaptics", "torq", "sl2619")):
         return True
 
-    # 4. OpenVINO, ONNX, CPU base formats that run via ONNX Runtime / IREE
-    if any(d in supported for d in ("onnx", "openvino", "cpu")):
-        return True
-
-    if not supported:
+    # 2. Check name or tags for Synaptics / Torq markers
+    name = str(model.get("name", "")).lower()
+    if any(k in name for k in ("torq", "synaptics", "sl2619", "synap", ".vmfb")):
         return True
 
     return False
@@ -393,9 +384,13 @@ def main() -> None:
     if not target_model_id:
         if not compatible_models:
             logger.error(
-                "No compatible models found in Frigate+.\n"
-                f"Found {len(models)} model(s): {[m.get('name') for m in models]}.\n"
-                "Use --list to inspect models, or use --model-id <id> --force to download anyway."
+                "No Torq NPU-compatible models found in Frigate+.\n"
+                f"Found {len(models)} model(s) in account/base: {[m.get('name') for m in models]}.\n"
+                "The Coralboard SL2619 strictly requires models compiled for the Synaptics Torq NPU (.vmfb / .synap).\n"
+                "To resolve:\n"
+                "  1. In Frigate+ (https://plus.frigate.video), request a model with detector 'synaptics'.\n"
+                "  2. Or compile an existing ONNX model to .vmfb using the Torq compiler.\n"
+                "  3. Run 'python3 download_model.py --list' to inspect all models and detector targets."
             )
             sys.exit(1)
 

@@ -81,7 +81,7 @@ async def _handle_detection(raw_bytes: bytes, client_ip: str = "client") -> Dict
 
     t1 = time.perf_counter()
 
-    # 2. Execute inference via appropriate backend (Torq NPU / SyNAP / ONNX)
+    # 2. Execute inference via Torq NPU accelerator (IREE / SyNAP)
     try:
         raw_outputs = npu_engine.infer(tensor)
     except Exception as e:
