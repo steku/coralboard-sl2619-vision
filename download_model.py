@@ -7,8 +7,10 @@ import logging
 import os
 import re
 import sys
+import tarfile
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+import zipfile
 import requests
 
 logging.basicConfig(
@@ -372,15 +374,53 @@ def main() -> None:
     # 6. Stream download
     download_file(download_url, dest_path)
 
-    # 7. Create convenient aliases (models/yolov9_320.vmfb and models/model.vmfb)
+    # 7. Inspect downloaded artifact and unpack if archive
+    final_model_path = dest_path
+    if dest_path.exists():
+        with open(dest_path, "rb") as f:
+            header = f.read(128)
+        if header.startswith(b"<?xml") or b"<Error>" in header:
+            err_snippet = header.decode("utf-8", errors="ignore")
+            logger.error(f"Downloaded artifact is an XML error document from storage:\n{err_snippet}")
+            sys.exit(1)
+        if header.startswith(b"{") and (b"error" in header.lower() or b"message" in header.lower()):
+            err_snippet = header.decode("utf-8", errors="ignore")
+            logger.error(f"Downloaded artifact contains JSON error response:\n{err_snippet}")
+            sys.exit(1)
+
+        if header.startswith(b"\x1f\x8b") or tarfile.is_tarfile(dest_path):
+            logger.info("Artifact is a tar archive. Extracting...")
+            try:
+                with tarfile.open(dest_path, "r:*") as tar:
+                    tar.extractall(path=output_dir)
+                logger.info("Tar archive extracted successfully.")
+            except Exception as e:
+                logger.warning(f"Failed to extract tar archive: {e}")
+        elif header.startswith(b"PK\x03\x04") or zipfile.is_zipfile(dest_path):
+            logger.info("Artifact is a zip archive. Extracting...")
+            try:
+                with zipfile.ZipFile(dest_path, "r") as zf:
+                    zf.extractall(path=output_dir)
+                logger.info("Zip archive extracted successfully.")
+            except Exception as e:
+                logger.warning(f"Failed to extract zip archive: {e}")
+
+        # Look for extracted model file (.vmfb or .synap)
+        for ext in (".vmfb", ".synap"):
+            for candidate in output_dir.glob(f"*{ext}"):
+                if candidate.name not in ("yolov9_320.vmfb", "model.vmfb") and candidate.is_file():
+                    final_model_path = candidate
+                    break
+
+    # 8. Create convenient aliases (models/yolov9_320.vmfb and models/model.vmfb)
     for alias_name in ("yolov9_320.vmfb", "model.vmfb"):
         alias_path = output_dir / alias_name
-        if alias_path.resolve() != dest_path.resolve():
+        if alias_path.resolve() != final_model_path.resolve():
             try:
                 if alias_path.is_symlink() or alias_path.exists():
                     alias_path.unlink()
-                alias_path.symlink_to(dest_path.name)
-                logger.info(f"Linked {alias_name} -> {dest_path.name}")
+                alias_path.symlink_to(final_model_path.name)
+                logger.info(f"Linked {alias_name} -> {final_model_path.name}")
             except Exception:
                 pass
 

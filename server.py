@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
     try:
         npu_engine.load()
     except Exception as e:
-        logger.error(f"Startup warning during NPU initialization: {e}")
+        logger.error(f"Startup NPU initialization failed: {e}")
     yield
     logger.info("Shutting down Vision Proxy Service.")
 
@@ -44,11 +44,13 @@ app = FastAPI(
 
 @app.get("/health")
 async def health_check() -> Dict[str, Any]:
-    """Health check reporting NPU runner status."""
+    """Health check reporting NPU runner status and diagnostics."""
     return {
-        "status": "healthy" if npu_engine.is_ready else "degraded",
+        "status": "healthy" if npu_engine.is_ready else "error",
         "npu_ready": npu_engine.is_ready,
+        "backend": getattr(npu_engine, "backend_type", "unknown"),
         "model_path": npu_engine.model_path,
+        "init_error": getattr(npu_engine, "init_error", None),
     }
 
 
