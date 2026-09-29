@@ -5,13 +5,14 @@ secrets.yaml
 secrets.json
 .env
 
-# Model weights & binaries
-models/*.vmfb
-models/*.onnx
-models/*.bin
-models/*.tflite
-models/*.synap
-models/*.hef
+# Model weights & downloaded artifacts
+models/*
+!models/.gitkeep
+
+# Sample test images (allow reference test fixture only)
+samples/*
+!samples/dog_bike_car.jpg
+!samples/.gitkeep
 
 # Python bytecode & environments
 __pycache__/
