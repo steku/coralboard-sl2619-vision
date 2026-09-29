@@ -12,7 +12,8 @@ Lightweight network proxy service running on the **Synaptics Coralboard SL2619**
 - [`server.py`](server.py): FastAPI application serving `/detect` and `/v1/vision/detection`.
 - [`engine.py`](engine.py): IREE / Torq Runtime session management with automatic entrypoint and NCHW/NHWC layout detection.
 - [`yolo.py`](yolo.py): Preprocessing (raw bytes $\to 320 \times 320 \times 3$) and postprocessing (YOLOv9 tensors $\to$ NMS $\to$ JSON).
-- [`config.py`](config.py): Server and inference parameters, including `COCO_CLASSES`.
+- [`config.example.yaml`](config.example.yaml): Central user configuration template (copy to `config.yaml` to customize model, labels, thresholds, and server settings).
+- [`config.py`](config.py): Configuration loader and runtime defaults with automatic label discovery.
 - [`ARCHITECTURE.md`](ARCHITECTURE.md): Full architectural overview and developer specification.
 
 ## Quick Start on Coralboard SL2619
@@ -24,10 +25,13 @@ pip install -r requirements.txt
 # 2. Select / Deploy Model
 
 # Option A: Custom Trained Model (e.g. from frigate-model-training)
-# Copy your compiled yolov9_320.vmfb into models/:
+# Copy your compiled yolov9_320.vmfb and labels.json into models/:
 mkdir -p models
 cp /path/to/yolov9_320.vmfb models/yolov9_320.vmfb
-# Ensure config.py COCO_CLASSES matches your dataset classes
+cp /path/to/labels.json models/labels.json
+# (Optional) Customize settings in config.yaml:
+# cp config.example.yaml config.yaml
+
 
 # Option B: Download official pre-compiled Synaptics Torq NPU base model (320x320 INT8 VMFB)
 python3 download_model.py --synaptics-npu
@@ -39,7 +43,60 @@ python3 test_detection.py --model models/yolov9_320.vmfb
 python3 server.py
 ```
 
+## Configuration (`config.yaml`)
+
+The proxy service uses **`config.yaml`** as the single source of truth for user settings.
+
+To customize settings, copy the template:
+```bash
+cp config.example.yaml config.yaml
+```
+
+### Configuration Schema
+
+```yaml
+# Server Network Settings
+server:
+  host: "0.0.0.0"
+  port: 5000
+
+# Model and Labels Configuration
+model:
+  path: "models/yolov9_320.vmfb"
+  labels: "models/labels.json"  # Configurable file name (.json or .txt)
+  # width: 320
+  # height: 320
+
+# Inference & Postprocessing Thresholds
+detection:
+  score_threshold: 0.20   # Minimum confidence threshold (0.0 to 1.0)
+  iou_threshold: 0.40     # Non-Maximum Suppression (NMS) IoU threshold
+  max_detections: 20      # Maximum detections per frame
+  confidence_scale: 2.0   # Scale factor for INT8 quantized scores
+
+# Frigate+ Model Downloader Settings (download_model.py)
+frigate_plus:
+  api_key: ""
+  model_id: ""
+  resolution: 640
+  output_dir: "models"
+```
+
+### Custom Labels (`labels.json` / `labels.txt`)
+
+Labels are dynamically discovered and mapped to model output classes. You can configure a custom label file name under `model.labels` in `config.yaml`, or place `labels.json` in the `models/` directory.
+
+The parser automatically supports:
+- **Ultralytics YOLO metadata**: `{"names": {"0": "person", "1": "car"}}` or `{"names": ["person", "car"]}`
+- **Plain JSON list**: `["person", "car", "dog"]`
+- **Direct index mapping**: `{"0": "person", "1": "car"}`
+- **Frigate / Roboflow metadata**: `{"labels": [...]}` or `{"classes": [...]}`
+- **Plain text file (`labels.txt`)**: One class label per line.
+
+*(If no custom label file is found, it automatically defaults to the standard 80 COCO classes).*
+
 ## Frigate Configuration (Upstream Server)
+
 
 When Frigate runs on an upstream machine, it communicates with the Coralboard SL2619 proxy service over HTTP.
 

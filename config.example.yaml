@@ -1,7 +1,33 @@
-# Example Configuration for Coralboard SL2619 Vision Proxy
-# Copy this file to config.yaml and insert your real Frigate+ API key:
+# ==============================================================================
+# Synaptics Coralboard SL2619 Vision Proxy Configuration
+# ==============================================================================
+# Copy this file to config.yaml to customize settings:
 #   cp config.example.yaml config.yaml
+#
+# config.yaml is the single source of truth for user settings.
+# All settings below have sensible built-in defaults if omitted.
+# ==============================================================================
 
+# Server Network Settings
+server:
+  host: "0.0.0.0"
+  port: 5000
+
+# Model and Labels Configuration
+model:
+  path: "models/yolov9_320.vmfb"
+  labels: "models/labels.json"  # Supports .json (any format) or .txt (one class per line)
+  # width: 320
+  # height: 320
+
+# Inference & Postprocessing Thresholds
+detection:
+  score_threshold: 0.20   # Minimum confidence threshold (0.0 to 1.0)
+  iou_threshold: 0.40     # Non-Maximum Suppression (NMS) IoU threshold
+  max_detections: 20      # Maximum number of detections per frame
+  confidence_scale: 2.0   # Scale factor for INT8 quantized confidence scores
+
+# Frigate+ Model Downloader Settings (download_model.py)
 frigate_plus:
   # Frigate+ API Key in format: <client_id>:<client_secret>
   # Generated at https://plus.frigate.video
@@ -18,6 +44,4 @@ frigate_plus:
   # Local directory where downloaded model artifacts will be saved
   output_dir: "models"
 
-server:
-  host: "0.0.0.0"
-  port: 5000
+
