@@ -14,10 +14,38 @@ CONFIDENCE_SCALE = 2.0  # Rescales INT8 saturated [0.0, 0.5] confidences to stan
 HOST = "0.0.0.0"
 PORT = 5000
 
-# Model Classes (matching yolo_dataset/data.yaml)
-COCO_CLASSES = [
-    "person",
-    "dog",
-    "cat",
-    "car",
+import json
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+
+# COCO 80 Default Class Names
+DEFAULT_COCO_CLASSES = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
+    "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat",
+    "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack",
+    "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball",
+    "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket",
+    "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
+    "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
+    "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator",
+    "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
 ]
+
+def _load_classes():
+    labels_file = BASE_DIR / "models" / "labels.json"
+    if labels_file.exists():
+        try:
+            with open(labels_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                names = data.get("names", {})
+                if isinstance(names, dict):
+                    return [names[str(i)] for i in range(len(names))]
+                elif isinstance(names, list):
+                    return names
+        except Exception:
+            pass
+    return DEFAULT_COCO_CLASSES
+
+COCO_CLASSES = _load_classes()

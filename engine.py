@@ -420,13 +420,16 @@ class TorqVisionEngine:
                 return self.runner.predict([t])
             return self.runner.infer([t])
 
-        # Proactively check model's expected layout (NCHW vs NHWC)
+        # Proactively check model's expected layout (NCHW vs NHWC) and dtype (INT8 vs Float32)
         inp = input_tensor
         if hasattr(self.runner, "inputs_info") and self.runner.inputs_info:
             try:
-                exp_shape = self.runner.inputs_info[0].shape
+                exp_info = self.runner.inputs_info[0]
+                exp_shape = exp_info.shape
                 if len(exp_shape) == 4 and exp_shape[1] in (1, 3, 4) and inp.ndim == 4 and inp.shape[-1] in (1, 3, 4):
                     inp = np.transpose(inp, (0, 3, 1, 2))
+                if getattr(exp_info, "dtype", None) == np.int8 and inp.dtype != np.int8:
+                    inp = np.clip(np.round(inp * 255.0) - 128.0, -128, 127).astype(np.int8)
             except Exception:
                 pass
 
