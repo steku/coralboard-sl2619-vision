@@ -420,8 +420,17 @@ class TorqVisionEngine:
                 return self.runner.predict([t])
             return self.runner.infer([t])
 
-        # Execute inference through appropriate runtime (support float32/int8 and NHWC/NCHW formats)
+        # Proactively check model's expected layout (NCHW vs NHWC)
         inp = input_tensor
+        if hasattr(self.runner, "inputs_info") and self.runner.inputs_info:
+            try:
+                exp_shape = self.runner.inputs_info[0].shape
+                if len(exp_shape) == 4 and exp_shape[1] in (1, 3, 4) and inp.ndim == 4 and inp.shape[-1] in (1, 3, 4):
+                    inp = np.transpose(inp, (0, 3, 1, 2))
+            except Exception:
+                pass
+
+        # Execute inference through appropriate runtime (support float32/int8 and NHWC/NCHW formats)
         try:
             outputs = _run_forward(inp)
         except (TypeError, ValueError) as err:
