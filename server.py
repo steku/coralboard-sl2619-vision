@@ -65,7 +65,9 @@ async def health_check() -> Dict[str, Any]:
     }
 
 
-async def _handle_detection(raw_bytes: bytes, client_ip: str = "client") -> Dict[str, Any]:
+async def _handle_detection(
+    raw_bytes: bytes, client_ip: str = "client", score_threshold: float = SCORE_THRESHOLD
+) -> Dict[str, Any]:
     """Shared pipeline: preprocess -> NPU inference -> YOLOv9 postprocess."""
     if not raw_bytes:
         raise HTTPException(
@@ -109,7 +111,7 @@ async def _handle_detection(raw_bytes: bytes, client_ip: str = "client") -> Dict
         result = postprocess_yolov9(
             outputs=raw_outputs,
             orig_shape=orig_shape,
-            score_threshold=SCORE_THRESHOLD,
+            score_threshold=score_threshold,
             iou_threshold=IOU_THRESHOLD,
             input_width=in_w,
             input_height=in_h,
@@ -159,8 +161,14 @@ async def detect_raw_bytes(request: Request) -> Dict[str, Any]:
     content_type = request.headers.get("content-type", "")
     client_ip = request.client.host if request.client else "unknown"
 
+    score_threshold = SCORE_THRESHOLD
     if "multipart/form-data" in content_type:
         form = await request.form()
+        if "min_confidence" in form:
+            try:
+                score_threshold = float(form["min_confidence"])
+            except ValueError:
+                pass
         image_field = form.get("image") or form.get("file")
         if image_field is None:
             # Fallback to the first form entry
@@ -178,7 +186,7 @@ async def detect_raw_bytes(request: Request) -> Dict[str, Any]:
         # Direct raw image stream in HTTP POST body
         raw_bytes = await request.body()
 
-    return await _handle_detection(raw_bytes, client_ip=client_ip)
+    return await _handle_detection(raw_bytes, client_ip=client_ip, score_threshold=score_threshold)
 
 
 @app.post("/v1/vision/detection")
