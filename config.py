@@ -2,7 +2,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -34,7 +34,8 @@ def _load_yaml_config() -> Dict[str, Any]:
                 with open(cfg_file, "r", encoding="utf-8") as f:
                     return yaml.safe_load(f) or {}
             except Exception as e:
-                logging.getLogger("coral_vision.config").warning(f"Failed to read {cfg_file}: {e}")
+                logging.getLogger("coral_vision.config").error(f"Failed to read {cfg_file}: {e}")
+                raise RuntimeError(f"Error reading configuration file {cfg_file}: {e}") from e
     return {}
 
 
@@ -51,7 +52,10 @@ if _yaml_cfg:
     _model_cfg = _yaml_cfg.get("model", {})
     if isinstance(_model_cfg, dict):
         if "path" in _model_cfg:
-            MODEL_PATH = str(_model_cfg["path"])
+            val = str(_model_cfg["path"]).strip()
+            if not val:
+                raise ValueError("Model path specified in config.yaml cannot be empty.")
+            MODEL_PATH = val
         if "labels" in _model_cfg:
             LABELS_PATH = str(_model_cfg["labels"])
         elif "labels_path" in _model_cfg:
@@ -75,13 +79,19 @@ if _yaml_cfg:
     if "labels_path" in _yaml_cfg:
         LABELS_PATH = str(_yaml_cfg["labels_path"])
     if "model_path" in _yaml_cfg:
-        MODEL_PATH = str(_yaml_cfg["model_path"])
+        val = str(_yaml_cfg["model_path"]).strip()
+        if not val:
+            raise ValueError("Model path specified in config.yaml cannot be empty.")
+        MODEL_PATH = val
 
 # Environment variable overrides
 if os.environ.get("LABELS_PATH"):
     LABELS_PATH = os.environ["LABELS_PATH"]
 if os.environ.get("MODEL_PATH"):
-    MODEL_PATH = os.environ["MODEL_PATH"]
+    val = os.environ["MODEL_PATH"].strip()
+    if not val:
+        raise ValueError("MODEL_PATH environment variable cannot be empty.")
+    MODEL_PATH = val
 
 # COCO 80 Default Class Names
 DEFAULT_COCO_CLASSES = [
@@ -132,7 +142,7 @@ def _parse_label_data(data: Any) -> Optional[List[str]]:
     return None
 
 
-def _load_classes() -> List[str]:
+def _load_classes() -> Tuple[List[str], Optional[str]]:
     """Load model class labels from LABELS_PATH or standard locations, falling back to COCO defaults."""
     candidate_files = []
 
@@ -168,20 +178,21 @@ def _load_classes() -> List[str]:
                         data = json.load(f)
                     classes = _parse_label_data(data)
                     if classes:
-                        logger.info(f"Loaded {len(classes)} classes from {labels_file.name}")
-                        return classes
+                        logger.info(f"Loaded {len(classes)} classes from labels file: {labels_file}")
+                        return classes, str(labels_file)
                 elif labels_file.suffix == ".txt":
                     with open(labels_file, "r", encoding="utf-8") as f:
                         lines = [line.strip() for line in f if line.strip()]
                     if lines:
-                        logger.info(f"Loaded {len(lines)} classes from {labels_file.name}")
-                        return lines
+                        logger.info(f"Loaded {len(lines)} classes from labels file: {labels_file}")
+                        return lines, str(labels_file)
             except Exception as e:
                 logger.warning(f"Failed to load labels from {labels_file}: {e}")
 
-    logger.info(f"Using default COCO classes ({len(DEFAULT_COCO_CLASSES)} classes)")
-    return DEFAULT_COCO_CLASSES
+    logger.info(f"Using default COCO classes ({len(DEFAULT_COCO_CLASSES)} classes) - no labels file loaded")
+    return DEFAULT_COCO_CLASSES, None
 
 
-COCO_CLASSES = _load_classes()
+COCO_CLASSES, LOADED_LABELS_PATH = _load_classes()
+
 

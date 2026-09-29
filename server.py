@@ -1,6 +1,7 @@
 """FastAPI Vision Proxy Server for Synaptics Coralboard SL2619."""
 
 import logging
+import sys
 import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict
@@ -9,27 +10,35 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 import uvicorn
 
-from config import HOST, IOU_THRESHOLD, MODEL_PATH, PORT, SCORE_THRESHOLD
-from engine import TorqVisionEngine
-from yolo import postprocess_yolov9, preprocess_image
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("coral_vision.server")
 
+from config import COCO_CLASSES, HOST, IOU_THRESHOLD, LOADED_LABELS_PATH, MODEL_PATH, PORT, SCORE_THRESHOLD
+from engine import TorqVisionEngine
+from yolo import postprocess_yolov9, preprocess_image
+
 npu_engine = TorqVisionEngine(model_path=MODEL_PATH)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifecycle manager to initialize Torq NPU session on startup."""
-    logger.info("Initializing Synaptics Torq NPU session...")
+    """Lifecycle manager to initialize Torq NPU session and report loaded assets on startup."""
+    if LOADED_LABELS_PATH:
+        logger.info(f"Loaded labels file: {LOADED_LABELS_PATH} ({len(COCO_CLASSES)} classes)")
+    else:
+        logger.info(f"No custom labels file loaded. Using default COCO classes ({len(COCO_CLASSES)} classes).")
+
+    logger.info(f"Initializing Synaptics Torq NPU session for model: {MODEL_PATH}...")
     try:
         npu_engine.load()
     except Exception as e:
-        logger.error(f"Startup NPU initialization failed: {e}")
+        logger.critical(
+            f"Fatal error loading configured model '{npu_engine.model_path}': {e}. Exiting server."
+        )
+        sys.exit(1)
     yield
     logger.info("Shutting down Vision Proxy Service.")
 
@@ -50,6 +59,8 @@ async def health_check() -> Dict[str, Any]:
         "npu_ready": npu_engine.is_ready,
         "backend": getattr(npu_engine, "backend_type", "unknown"),
         "model_path": npu_engine.model_path,
+        "labels_path": LOADED_LABELS_PATH,
+        "class_count": len(COCO_CLASSES),
         "init_error": getattr(npu_engine, "init_error", None),
     }
 
@@ -177,4 +188,7 @@ async def detect_vision_api(request: Request) -> Dict[str, Any]:
 
 
 if __name__ == "__main__":
-    uvicorn.run("server:app", host=HOST, port=PORT, log_level="info")
+    try:
+        uvicorn.run("server:app", host=HOST, port=PORT, log_level="info")
+    except SystemExit as e:
+        sys.exit(e.code)

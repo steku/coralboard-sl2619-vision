@@ -118,107 +118,6 @@ def _detect_file_format(file_path: Path) -> str:
     return "vmfb"
 
 
-def _inspect_and_unpack_if_archive(file_path: Path) -> Path:
-    """Inspect downloaded artifact, auto-unpack if compressed, and return path to model."""
-    if not file_path.exists():
-        return file_path
-
-    if file_path.stat().st_size == 0:
-        raise ValueError(f"Model file '{file_path}' is completely empty (0 bytes).")
-
-    # Never extract .vmfb files (IREE modules are packaged as zip containers with module.fb)
-    if file_path.suffix == ".vmfb" or _detect_file_format(file_path) == "vmfb":
-        return file_path
-
-    with open(file_path, "rb") as f:
-        header = f.read(128)
-
-    # Check for text/XML error response (e.g. S3 AccessDenied)
-    if header.startswith(b"<?xml") or b"<Error>" in header:
-        err_snippet = header.decode("utf-8", errors="ignore")
-        raise RuntimeError(
-            f"Model file '{file_path}' is an XML error document from storage, not a model binary:\n{err_snippet}"
-        )
-
-    if header.startswith(b"{") and (b"error" in header.lower() or b"message" in header.lower()):
-        err_snippet = header.decode("utf-8", errors="ignore")
-        raise RuntimeError(
-            f"Model file '{file_path}' contains JSON error response:\n{err_snippet}"
-        )
-
-    out_dir = file_path.parent
-
-    is_archive = False
-    # Check for GZIP / TAR archive
-    if header.startswith(b"\x1f\x8b") or tarfile.is_tarfile(file_path):
-        logger.info(f"Archive detected at {file_path}. Unpacking tarball...")
-        try:
-            with tarfile.open(file_path, "r:*") as tar:
-                tar.extractall(path=out_dir)
-            logger.info("Tar archive extracted successfully.")
-            is_archive = True
-        except Exception as e:
-            logger.warning(f"Failed to extract as tar archive: {e}")
-
-    # Check for general ZIP archive (excluding IREE bytecode vmfb)
-    elif header.startswith(b"PK\x03\x04") or zipfile.is_zipfile(file_path):
-        is_vmfb = False
-        try:
-            with zipfile.ZipFile(file_path, "r") as zf:
-                if "module.fb" in zf.namelist():
-                    is_vmfb = True
-        except Exception:
-            pass
-
-        if not is_vmfb:
-            logger.info(f"Zip archive detected at {file_path}. Unpacking...")
-            try:
-                with zipfile.ZipFile(file_path, "r") as zf:
-                    zf.extractall(path=out_dir)
-                logger.info("Zip archive extracted successfully.")
-                is_archive = True
-            except Exception as e:
-                logger.warning(f"Failed to extract as zip archive: {e}")
-
-    # Check for Hailo HEF model misnamed as .vmfb
-    if header.startswith(b"\x01HEF") or header.startswith(b"HEF"):
-        hef_path = file_path.with_suffix(".hef")
-        if hef_path != file_path:
-            try:
-                if not hef_path.exists():
-                    file_path.rename(hef_path)
-                file_path = hef_path
-                logger.info(f"Renamed misnamed Hailo artifact: {hef_path.name}")
-            except Exception as e:
-                logger.warning(f"Could not rename {file_path} -> {hef_path}: {e}")
-        return file_path
-
-    # Check for ONNX model disguised as .vmfb
-    if header.startswith(b"\x08") and len(header) > 3 and header[2] == 0x12:
-        logger.info(f"Artifact '{file_path.name}' is an ONNX model (Protobuf wire format ir_version=7).")
-        onnx_path = file_path.with_suffix(".onnx")
-        if onnx_path != file_path:
-            try:
-                if not onnx_path.exists():
-                    file_path.rename(onnx_path)
-                file_path = onnx_path
-            except Exception as e:
-                logger.warning(f"Could not rename {file_path} -> {onnx_path}: {e}")
-
-    # If an archive was extracted, find the newly extracted model inside output dir
-    if is_archive:
-        for ext in (".vmfb", ".synap", ".onnx"):
-            for extracted in out_dir.glob(f"*{ext}"):
-                if extracted.name not in ("yolov9_320.vmfb", "model.vmfb", "yolov9_320.onnx", "model.onnx") and extracted.is_file():
-                    try:
-                        if _detect_file_format(extracted) in ("vmfb", "synap", "onnx"):
-                            return extracted
-                    except Exception:
-                        pass
-
-    return file_path
-
-
 class TorqVisionEngine:
     """Inference Engine strictly for Synaptics Torq NPU and SyNAP hardware accelerators."""
 
@@ -242,58 +141,19 @@ class TorqVisionEngine:
         return 320
 
     def _resolve_model_path(self) -> Path:
-        """Resolve model path against workspace and perform auto-discovery."""
+        """Resolve model path against workspace directory without auto-discovery."""
         target = Path(self.model_path)
         if not target.is_absolute():
             target = BASE_DIR / target
 
-        model_dir = target.parent if target.parent.exists() else (BASE_DIR / "models")
-        if model_dir.is_dir():
-            # Clean up and rename any misnamed Hailo .hef files ending in .vmfb
-            for f in list(model_dir.iterdir()):
-                if f.is_file() and f.suffix == ".vmfb":
-                    try:
-                        if _detect_file_format(f) == "hef":
-                            hef_dest = f.with_suffix(".hef")
-                            if not hef_dest.exists():
-                                f.rename(hef_dest)
-                                logger.info(f"Renamed misnamed Hailo model: {f.name} -> {hef_dest.name}")
-                    except Exception:
-                        pass
+        if not target.exists():
+            raise FileNotFoundError(
+                f"Model file not found at '{target}'. "
+                "The server will not search for alternative models; please check your config.yaml."
+            )
 
-        # If configured path does not exist, points to Hailo (.hef), or points to ONNX, auto-discover real NPU binaries
-        is_invalid = (
-            not target.exists()
-            or _detect_file_format(target) in ("hef", "onnx")
-            or target.suffix == ".onnx"
-        )
-        if is_invalid:
-            if model_dir.is_dir():
-                candidates = [
-                    f for f in model_dir.iterdir()
-                    if f.suffix in (".vmfb", ".synap") and f.is_file()
-                ]
-                # Filter for genuine Torq/SyNAP NPU binaries
-                compatible = []
-                for c in candidates:
-                    try:
-                        c_fmt = _detect_file_format(c)
-                        if c_fmt in ("vmfb", "synap"):
-                            compatible.append(c)
-                    except Exception:
-                        pass
-
-                if compatible:
-                    compatible.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-                    target = compatible[0]
-                    logger.info(f"Auto-discovered compatible NPU model artifact: {target}")
-                else:
-                    raise FileNotFoundError(
-                        f"Configured model '{target}' is an uncompiled ONNX or incompatible model, "
-                        "and no genuine Torq NPU models (.vmfb / .synap) were found in 'models/'.\n"
-                        "To download and install the official hardware-accelerated model, run:\n"
-                        "  python3 download_model.py --synaptics-npu"
-                    )
+        if not target.is_file():
+            raise ValueError(f"Specified model path '{target}' is not a regular file.")
 
         return target
 
@@ -302,24 +162,19 @@ class TorqVisionEngine:
         self._is_ready = False
         self.init_error = None
 
-        # 1. Resolve and validate model path
+        # 1. Resolve and validate model path strictly as configured
         try:
             resolved_path = self._resolve_model_path()
-            if resolved_path.exists():
-                resolved_path = _inspect_and_unpack_if_archive(resolved_path)
             self.model_path = str(resolved_path)
         except Exception as e:
             self.init_error = f"Model validation failed: {e}"
-            logger.error(self.init_error, exc_info=True)
+            logger.error(self.init_error)
             raise
 
-        if not os.path.exists(self.model_path):
-            self.init_error = (
-                f"Model file not found at '{self.model_path}' and no compatible NPU models found in 'models/'. "
-                "Please run 'python3 download_model.py' to download your Torq NPU model (.vmfb / .synap)."
-            )
+        if os.path.getsize(self.model_path) == 0:
+            self.init_error = f"Model file '{self.model_path}' is completely empty (0 bytes)."
             logger.error(self.init_error)
-            raise FileNotFoundError(self.init_error)
+            raise ValueError(self.init_error)
 
         file_size_mb = os.path.getsize(self.model_path) / (1024 * 1024)
         fmt = _detect_file_format(Path(self.model_path))
