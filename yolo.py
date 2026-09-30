@@ -4,12 +4,24 @@ from typing import Any, Dict, List, Tuple
 import cv2
 import numpy as np
 
-from config import COCO_CLASSES, CONFIDENCE_SCALE, INPUT_HEIGHT, INPUT_WIDTH, IOU_THRESHOLD, MAX_DETECTIONS, SCORE_THRESHOLD
+from config import (
+    COCO_CLASSES,
+    CONFIDENCE_SCALE,
+    INPUT_HEIGHT,
+    INPUT_WIDTH,
+    IOU_THRESHOLD,
+    MAX_DETECTIONS,
+    OUTPUT_SCALE,
+    OUTPUT_ZERO_POINT,
+    SCORE_THRESHOLD,
+)
 
 
 def preprocess_image(raw_bytes: bytes, target_w: int = INPUT_WIDTH, target_h: int = INPUT_HEIGHT) -> Tuple[np.ndarray, Tuple[int, int]]:
-    """Decode raw image bytes into a normalized (1, H, W, 3) NHWC float32 tensor.
+    """Decode raw image bytes into a letterboxed, normalized (1, H, W, 3) NHWC float32 tensor.
     
+    Preserves aspect ratio by scaling and centering with standard 114 gray padding.
+
     Returns:
         tensor: np.ndarray of shape (1, target_h, target_w, 3) normalized to [0.0, 1.0].
         orig_shape: (original_height, original_width).
@@ -31,14 +43,27 @@ def preprocess_image(raw_bytes: bytes, target_w: int = INPUT_WIDTH, target_h: in
     # 3. Convert BGR to RGB
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-    # 4. Resize to target dimension (320x320)
-    if (orig_w, orig_h) != (target_w, target_h):
-        resized = cv2.resize(image_rgb, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+    # 4. Letterbox resize to preserve aspect ratio (pad with 114 gray)
+    if (orig_w, orig_h) == (target_w, target_h):
+        letterboxed = image_rgb
     else:
-        resized = image_rgb
+        scale = min(float(target_w) / float(orig_w), float(target_h) / float(orig_h))
+        new_w = int(round(orig_w * scale))
+        new_h = int(round(orig_h * scale))
 
-    # 5. Normalize uint8 [0, 255] to float32 [0.0, 1.0] and add batch dimension -> (1, 320, 320, 3)
-    tensor = resized.astype(np.float32) / 255.0
+        if (orig_w, orig_h) != (new_w, new_h):
+            resized = cv2.resize(image_rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        else:
+            resized = image_rgb
+
+        pad_x = (target_w - new_w) // 2
+        pad_y = (target_h - new_h) // 2
+
+        letterboxed = np.full((target_h, target_w, 3), 114, dtype=np.uint8)
+        letterboxed[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = resized
+
+    # 5. Normalize uint8 [0, 255] to float32 [0.0, 1.0] and add batch dimension -> (1, target_h, target_w, 3)
+    tensor = letterboxed.astype(np.float32) / 255.0
     tensor = np.expand_dims(tensor, axis=0)
 
     return tensor, (orig_h, orig_w)
@@ -52,6 +77,8 @@ def postprocess_yolov9(
     max_detections: int = MAX_DETECTIONS,
     input_width: int = INPUT_WIDTH,
     input_height: int = INPUT_HEIGHT,
+    out_scale: float = OUTPUT_SCALE,
+    out_zp: float = OUTPUT_ZERO_POINT,
 ) -> Dict[str, Any]:
     """Parse YOLOv9 output tensors into Frigate-compatible bounding box structures.
     
@@ -63,6 +90,8 @@ def postprocess_yolov9(
         max_detections: Maximum detections to return (Frigate standard is 20).
         input_width: Model tensor input width.
         input_height: Model tensor input height.
+        out_scale: INT8 output dequantization scale factor.
+        out_zp: INT8 output dequantization zero point.
         
     Returns:
         Dictionary containing:
@@ -77,9 +106,9 @@ def postprocess_yolov9(
     # Ensure numpy array
     raw_pred = np.asarray(raw_pred)
 
-    # Dequantize int8 predictions if model outputs INT8 (e.g. YOLO26 Torq NPU head)
+    # Dequantize int8 predictions if model outputs INT8 (e.g. YOLO Torq NPU head)
     if raw_pred.dtype == np.int8:
-        raw_pred = (raw_pred.astype(np.float32) + 128.0) * 0.00423651235178113
+        raw_pred = (raw_pred.astype(np.float32) - out_zp) * out_scale
     elif raw_pred.dtype != np.float32:
         raw_pred = raw_pred.astype(np.float32)
 
@@ -144,6 +173,14 @@ def postprocess_yolov9(
     )
 
     orig_h, orig_w = orig_shape
+    in_w = float(input_width)
+    in_h = float(input_height)
+
+    # Calculate letterbox scale and padding for unletterbox coordinate transformation
+    scale = min(in_w / float(orig_w), in_h / float(orig_h)) if orig_w > 0 and orig_h > 0 else 1.0
+    pad_x = (in_w - float(orig_w) * scale) / 2.0
+    pad_y = (in_h - float(orig_h) * scale) / 2.0
+
     predictions: List[Dict[str, Any]] = []
     detections: List[List[float]] = []
 
@@ -154,23 +191,48 @@ def postprocess_yolov9(
             label = COCO_CLASSES[cid] if cid < len(COCO_CLASSES) else f"class_{cid}"
             # Scale INT8 saturated scores (0.0-0.5) to standard Frigate detector range (0.0-1.0)
             conf = min(1.0, float(scores[idx]) * CONFIDENCE_SCALE)
-            ymin = float(y1[idx])
-            xmin = float(x1[idx])
-            ymax = float(y2[idx])
-            xmax = float(x2[idx])
+
+            norm_x1 = float(x1[idx])
+            norm_y1 = float(y1[idx])
+            norm_x2 = float(x2[idx])
+            norm_y2 = float(y2[idx])
+
+            # Unletterbox model coordinates (norm_x, norm_y in input_width x input_height space):
+            orig_x1 = (norm_x1 * in_w - pad_x) / scale
+            orig_y1 = (norm_y1 * in_h - pad_y) / scale
+            orig_x2 = (norm_x2 * in_w - pad_x) / scale
+            orig_y2 = (norm_y2 * in_h - pad_y) / scale
+
+            # Clip coordinates to original image bounds
+            orig_x1 = max(0.0, min(float(orig_w), orig_x1))
+            orig_y1 = max(0.0, min(float(orig_h), orig_y1))
+            orig_x2 = max(orig_x1, min(float(orig_w), orig_x2))
+            orig_y2 = max(orig_y1, min(float(orig_h), orig_y2))
 
             # DeepStack returns pixel coordinates based on original image dimensions
             predictions.append({
                 "label": label,
                 "confidence": round(conf, 4),
-                "y_min": int(ymin * orig_h),
-                "x_min": int(xmin * orig_w),
-                "y_max": int(ymax * orig_h),
-                "x_max": int(xmax * orig_w),
+                "y_min": int(round(orig_y1)),
+                "x_min": int(round(orig_x1)),
+                "y_max": int(round(orig_y2)),
+                "x_max": int(round(orig_x2)),
             })
 
-            # Frigate detection array: [class_id, confidence, ymin, xmin, ymax, xmax]
-            detections.append([cid, round(conf, 4), round(ymin, 4), round(xmin, 4), round(ymax, 4), round(xmax, 4)])
+            # Frigate detection array: [class_id, confidence, ymin, xmin, ymax, xmax] normalized to [0.0, 1.0]
+            norm_ymin = orig_y1 / float(orig_h) if orig_h > 0 else 0.0
+            norm_xmin = orig_x1 / float(orig_w) if orig_w > 0 else 0.0
+            norm_ymax = orig_y2 / float(orig_h) if orig_h > 0 else 0.0
+            norm_xmax = orig_x2 / float(orig_w) if orig_w > 0 else 0.0
+
+            detections.append([
+                cid,
+                round(conf, 4),
+                round(float(norm_ymin), 4),
+                round(float(norm_xmin), 4),
+                round(float(norm_ymax), 4),
+                round(float(norm_xmax), 4),
+            ])
 
     return {
         "success": True,

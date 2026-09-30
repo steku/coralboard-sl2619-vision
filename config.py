@@ -19,6 +19,12 @@ IOU_THRESHOLD = 0.4
 MAX_DETECTIONS = 20
 CONFIDENCE_SCALE = 2.0  # Rescales INT8 saturated [0.0, 0.5] confidences to standard [0.0, 1.0] for Frigate
 
+# Dequantization Settings for INT8 YOLO Models
+DEFAULT_OUT_SCALE = 0.00548009667545557
+DEFAULT_OUT_ZP = -122
+OUTPUT_SCALE = DEFAULT_OUT_SCALE
+OUTPUT_ZERO_POINT = DEFAULT_OUT_ZP
+
 # Server Settings
 HOST = "0.0.0.0"
 PORT = 5000
@@ -75,6 +81,21 @@ if _yaml_cfg:
             MAX_DETECTIONS = int(_det_cfg["max_detections"])
         if "confidence_scale" in _det_cfg:
             CONFIDENCE_SCALE = float(_det_cfg["confidence_scale"])
+        if "out_scale" in _det_cfg:
+            OUTPUT_SCALE = float(_det_cfg["out_scale"])
+        if "out_zp" in _det_cfg:
+            OUTPUT_ZERO_POINT = int(_det_cfg["out_zp"])
+
+    if isinstance(_model_cfg, dict):
+        if "out_scale" in _model_cfg:
+            OUTPUT_SCALE = float(_model_cfg["out_scale"])
+        if "out_zp" in _model_cfg:
+            OUTPUT_ZERO_POINT = int(_model_cfg["out_zp"])
+
+    if "out_scale" in _yaml_cfg:
+        OUTPUT_SCALE = float(_yaml_cfg["out_scale"])
+    if "out_zp" in _yaml_cfg:
+        OUTPUT_ZERO_POINT = int(_yaml_cfg["out_zp"])
 
     if "labels_path" in _yaml_cfg:
         LABELS_PATH = str(_yaml_cfg["labels_path"])
@@ -92,6 +113,10 @@ if os.environ.get("MODEL_PATH"):
     if not val:
         raise ValueError("MODEL_PATH environment variable cannot be empty.")
     MODEL_PATH = val
+if os.environ.get("OUT_SCALE") or os.environ.get("OUTPUT_SCALE"):
+    OUTPUT_SCALE = float(os.environ.get("OUT_SCALE") or os.environ.get("OUTPUT_SCALE"))
+if os.environ.get("OUT_ZP") or os.environ.get("OUTPUT_ZERO_POINT"):
+    OUTPUT_ZERO_POINT = int(os.environ.get("OUT_ZP") or os.environ.get("OUTPUT_ZERO_POINT"))
 
 # COCO 80 Default Class Names
 DEFAULT_COCO_CLASSES = [
@@ -177,6 +202,18 @@ def _load_classes() -> Tuple[List[str], Optional[str]]:
                     with open(labels_file, "r", encoding="utf-8") as f:
                         data = json.load(f)
                     classes = _parse_label_data(data)
+                    # Dynamically read quantization parameters if present
+                    if isinstance(data, dict) and "quantization" in data and isinstance(data["quantization"], dict):
+                        global OUTPUT_SCALE, OUTPUT_ZERO_POINT
+                        q = data["quantization"]
+                        if "out_scale" in q:
+                            OUTPUT_SCALE = float(q["out_scale"])
+                        if "out_zp" in q:
+                            OUTPUT_ZERO_POINT = int(q["out_zp"])
+                        logger.info(
+                            f"Loaded quantization parameters from {labels_file}: "
+                            f"scale={OUTPUT_SCALE}, zero_point={OUTPUT_ZERO_POINT}"
+                        )
                     if classes:
                         logger.info(f"Loaded {len(classes)} classes from labels file: {labels_file}")
                         return classes, str(labels_file)

@@ -10,7 +10,15 @@ import time
 import cv2
 import numpy as np
 
-from config import COCO_CLASSES, INPUT_HEIGHT, INPUT_WIDTH, MODEL_PATH, SCORE_THRESHOLD
+from config import (
+    COCO_CLASSES,
+    INPUT_HEIGHT,
+    INPUT_WIDTH,
+    MODEL_PATH,
+    OUTPUT_SCALE,
+    OUTPUT_ZERO_POINT,
+    SCORE_THRESHOLD,
+)
 from engine import TorqVisionEngine
 from yolo import postprocess_yolov9, preprocess_image
 
@@ -84,7 +92,7 @@ def main() -> None:
         # Diagnostic: print top 5 candidates regardless of threshold
         raw_arr = np.asarray(output)
         if raw_arr.dtype == np.int8:
-            raw_arr = (raw_arr.astype(np.float32) + 128.0) * 0.00423651235178113
+            raw_arr = (raw_arr.astype(np.float32) - OUTPUT_ZERO_POINT) * OUTPUT_SCALE
         if raw_arr.ndim == 3:
             raw_arr = np.squeeze(raw_arr, axis=0)
         if raw_arr.ndim == 2 and raw_arr.shape[0] < raw_arr.shape[1]:

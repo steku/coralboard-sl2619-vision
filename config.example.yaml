@@ -26,6 +26,8 @@ detection:
   iou_threshold: 0.40     # Non-Maximum Suppression (NMS) IoU threshold
   max_detections: 20      # Maximum number of detections per frame
   confidence_scale: 2.0   # Scale factor for INT8 quantized confidence scores
+  # out_scale: 0.00548009667545557  # Dequantization scale (dynamically loaded from labels.json by default)
+  # out_zp: -122                    # Dequantization zero point (dynamically loaded from labels.json by default)
 
 # Frigate+ Model Downloader Settings (download_model.py)
 frigate_plus:
